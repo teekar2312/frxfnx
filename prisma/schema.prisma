@@ -1,0 +1,233 @@
+// FINEX Forex Trading Platform - Prisma Schema
+// SQLite untuk persistensi lokal di Windows 11 + VS Code
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Konfigurasi global aplikasi (singleton)
+model AppSettings {
+  id              String   @id @default("singleton")
+  // Tema & UI
+  theme           String   @default("dark") // dark | light
+  density         String   @default("compact") // compact | dense | minimal
+  // Broker
+  brokerName      String   @default("FINEX Indonesia")
+  // MT5
+  mt5Path         String   @default("C:\\Program Files\\FINEX Indonesia\\MetaTrader 5\\terminal64.exe")
+  mt5Login       String   @default("")
+  mt5Password    String   @default("")
+  mt5Server       String   @default("FINEX-Live")
+  mt5AutoLaunch   Boolean  @default(true)
+  // Jadwal trading (24h format HH:MM)
+  tradingStart    String   @default("08:00") // Sesi Asia
+  tradingEnd      String   @default("23:30") // tutup sebelum sesi US akhir
+  blockWeekend    Boolean  @default(true) // Sabtu & Minggu tidak trade
+  // API Keys
+  tiingoApiKey    String   @default("")
+  groqApiKey      String   @default("")
+  groqModel       String   @default("llama-3.3-70b-versatile")
+  localAiEndpoint String  @default("http://127.0.0.1:11434/api/generate") // Ollama default
+  localAiModel    String   @default("llama3.1:8b")
+  // Default AI provider
+  aiProvider      String   @default("groq") // groq | local
+  // Risk default
+  riskPerTradePct  Float   @default(0.5) // scalper 0.25-0.5%
+  dailyStopPct     Float   @default(3.0)
+  weeklyStopPct    Float   @default(5.0)
+  maxLeverageRatio Float   @default(5.0)
+  maxMarginUsagePct Float  @default(30.0)
+  rrMin            Float   @default(1.5)
+  // Timestamp
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// Akun MT5 yang terhubung
+model Mt5Account {
+  id          String   @id @default(cuid())
+  login       String
+  server      String
+  broker      String   @default("FINEX Indonesia")
+  currency    String   @default("USD")
+  leverage    Int      @default(500)
+  equity      Float   @default(0)
+  balance     Float   @default(0)
+  margin      Float   @default(0)
+  freeMargin  Float   @default(0)
+  marginLevel Float   @default(0)
+  connectedAt DateTime?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  trades      Trade[]
+}
+
+// Trade / posisi (history & open)
+model Trade {
+  id           String   @id @default(cuid())
+  ticket       Int      @unique // MT5 ticket
+  accountId    String
+  account      Mt5Account @relation(fields: [accountId], references: [id])
+  symbol       String   // XAU/USD, EUR/USD, dst
+  side         String   // BUY | SELL
+  orderType    String   // MARKET | BUY_STOP | SELL_STOP | BUY_LIMIT | SELL_LIMIT
+  lots         Float
+  openPrice    Float
+  closePrice   Float?
+  stopLoss     Float?
+  takeProfit   Float?
+  slPips       Float?
+  tpPips       Float?
+  // Risk snapshot
+  riskPct      Float?
+  riskAmount   Float?
+  rrPlanned    Float?
+  // P&L
+  profit       Float   @default(0)
+  swap         Float   @default(0)
+  commission   Float   @default(0)
+  points       Float   @default(0)
+  // Status & strategi
+  status       String   @default("open") // open | closed | cancelled | pending
+  strategyId   String?
+  strategyName String?
+  newsEventId  String?
+  // Eksekusi
+  isAuto       Boolean  @default(false)
+  isManual     Boolean  @default(true)
+  // Waktu
+  openTime     DateTime
+  closeTime    DateTime?
+  durationMs   Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([symbol])
+  @@index([status])
+  @@index([openTime])
+}
+
+// Strategi trading
+model Strategy {
+  id           String   @id @default(cuid())
+  name         String
+  description  String
+  type         String   // fade_spike | 15min_breakout | custom
+  symbols      String   // CSV: XAU/USD,EUR/USD,...
+  enabled      Boolean  @default(true)
+  isAuto       Boolean  @default(false)
+  // Parameter
+  waitMinutes       Int   @default(15) // tunggu setelah rilis
+  entryAfterBreakout Boolean @default(true)
+  slPipsMax         Float  @default(40)
+  tpPipsTarget      Float  @default(20)
+  // Trigger news
+  newsFilterImpact String  @default("high") // high | medium | low
+  newsFilterCountry String @default("USD") // USD, EUR, GBP, JPY
+  // Schedule (idle jadwal)
+  activeStart    String @default("08:00")
+  activeEnd      String @default("23:30")
+  // Statistik
+  totalTrades    Int     @default(0)
+  wins           Int     @default(0)
+  losses         Int     @default(0)
+  totalProfit    Float   @default(0)
+  winRate        Float   @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+// Event berita ekonomi (dari Tiingo / Forex Factory)
+model NewsEvent {
+  id           String   @id @default(cuid())
+  externalId   String?
+  title        String
+  country      String   // USD, EUR, GBP, JPY, etc
+  currency     String   // USD, EUR, GBP, JPY
+  impact       String   // high | medium | low
+  eventTime    DateTime
+  // Tiga Angka Emas
+  previous     Float?
+  forecast     Float?
+  actual       Float?
+  deviation    Float? // (actual - forecast) / forecast %
+  // Hasil analisis
+  directionUsd String?  // up | down | neutral
+  directionXau String?  // up | down | neutral
+  directionEur String?
+  directionGbp String?
+  directionJpy String?
+  // Status
+  isReleased   Boolean  @default(false)
+  // Sumber
+  source       String   @default("tiingo") // tiingo | manual | forex_factory
+  // AI analisis
+  aiSummary    String?
+  aiConfidence Float?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([eventTime])
+  @@index([country])
+  @@index([impact])
+}
+
+// Sesi trading (jendela waktu aktif)
+model TradingSession {
+  id         String   @id @default(cuid())
+  name       String   // Asia, London, NewYork, Custom
+  startTime  String   // HH:MM
+  endTime    String   // HH:MM
+  daysOfWeek String   // CSV: 1,2,3,4,5 (Mon-Fri)
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// Pesan chat AI
+model ChatMessage {
+  id        String   @id @default(cuid())
+  role      String   // user | assistant | system
+  provider  String   // groq | local
+  model     String?
+  content   String
+  context   String?  // news id / strategy id / pair
+  tokens    Int?
+  latencyMs Int?
+  createdAt DateTime @default(now())
+}
+
+// Tick harga (rolling buffer, di-truncate secara berkala)
+model PriceTick {
+  id        String   @id @default(cuid())
+  symbol    String
+  bid       Float
+  ask       Float
+  spread    Float
+  time      DateTime
+  createdAt DateTime @default(now())
+
+  @@index([symbol, time])
+}
+
+// Log audit & runtime
+model LogEntry {
+  id        String   @id @default(cuid())
+  level     String   // info | warn | error | debug
+  source    String   // mt5 | strategy | ai | scheduler | trading
+  message   String
+  details   String?
+  createdAt DateTime @default(now())
+
+  @@index([level])
+  @@index([source])
+  @@index([createdAt])
+}
