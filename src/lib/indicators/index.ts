@@ -75,7 +75,8 @@ export function rsi(values: number[], period: number = 14): (number | null)[] {
   }
   avgGain /= period
   avgLoss /= period
-  out[period] = 100 - 100 / (1 + (avgLoss === 0 ? 100 : avgGain / avgLoss))
+  // Konsisten: jika avgLoss === 0 → RSI = 100 (max)
+  out[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss)
   for (let i = period + 1; i < values.length; i++) {
     const diff = values[i] - values[i - 1]
     const gain = diff > 0 ? diff : 0
@@ -101,9 +102,19 @@ export function stochastic(candles: Candle[], kPeriod: number = 14, dPeriod: num
     const range = hh - ll
     k.push(range === 0 ? 50 : ((candles[i].close - ll) / range) * 100)
   }
-  // %D = SMA of %K
-  const kValues = k.map((v) => v ?? 0)
-  const d = sma(kValues, dPeriod)
+  // %D = SMA of %K (gunakan hanya nilai valid %K, hindari null→0 skew)
+  // Untuk index i < kPeriod-1 + dPeriod-1, %D harus null
+  const d: (number | null)[] = new Array(k.length).fill(null)
+  const minIdx = kPeriod - 1 + dPeriod - 1  // butuh kPeriod nilai %K + dPeriod untuk SMA
+  for (let i = minIdx; i < k.length; i++) {
+    let sum = 0
+    let valid = true
+    for (let j = i - dPeriod + 1; j <= i; j++) {
+      if (k[j] === null) { valid = false; break }
+      sum += k[j] as number
+    }
+    if (valid) d[i] = sum / dPeriod
+  }
   return { k, d }
 }
 

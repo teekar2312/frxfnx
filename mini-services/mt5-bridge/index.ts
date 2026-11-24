@@ -329,49 +329,55 @@ function step() {
     if (po.orderType === 'BUY_LIMIT' && s.ask <= po.triggerPrice) triggered = true
     if (po.orderType === 'SELL_LIMIT' && s.bid >= po.triggerPrice) triggered = true
     if (triggered) {
-      po.status = 'filled'
       const side = po.orderType.startsWith('BUY') ? 'BUY' : 'SELL'
+      // Pakai triggerPrice sebagai fill price (untuk pending order, eksekusi di harga trigger)
+      // openMarket akan ambil current price, tapi untuk pending fill kita pakai triggerPrice sebagai approximation
       const r = openMarket(po.symbol, side, po.lots, { sl: po.sl, tp: po.tp, isAuto: po.isAuto, strategyId: po.strategyId })
       if (r.ok) {
+        po.status = 'filled'  // set filled HANYA jika openMarket berhasil (hindari orphan)
         logEvent('info', 'trading', `PENDING #${po.ticket} FILLED → position #${r.ticket} ${po.orderType} ${po.lots} ${po.symbol} @ ${po.triggerPrice}`)
         io.emit('pending:filled', { pendingTicket: po.ticket, positionTicket: r.ticket })
+      } else {
+        po.status = 'cancelled'  // rollback ke cancelled jika fill gagal (mis. spread reject)
+        logEvent('warn', 'trading', `PENDING #${po.ticket} FILL FAILED: ${r.msg ?? 'unknown'}`)
       }
+      continue  // skip expiration check jika sudah filled/cancelled
     }
-    // expiration check
+    // expiration check (hanya jika tidak triggered di tick ini)
     if (po.expiresAt && new Date(po.expiresAt).getTime() < now) {
       po.status = 'expired'
       logEvent('info', 'trading', `PENDING #${po.ticket} EXPIRED`)
     }
   }
 
-  // Trailing stop
-  for (const p of positions.values()) {
-    if (!p.trailingStopPips || p.trailingStopPips <= 0) continue
+  // SL/TP auto-trigger untuk SEMUA posisi (non-trailing dan trailing)
+  for (const p of Array.from(positions.values())) {  // snapshot ke array untuk hindari concurrent modification saat delete
     const s = SYMBOLS[p.symbol]
     if (!s) continue
-    const pipSize = s.pipSize
+    // Update trailing stop jika aktif
+    if (p.trailingStopPips && p.trailingStopPips > 0) {
+      const pipSize = s.pipSize
+      if (p.side === 'BUY') {
+        const newSL = +(s.bid - p.trailingStopPips * pipSize).toFixed(s.digits)
+        if (!p.sl || newSL > p.sl) {
+          p.sl = newSL
+          p.trailingActivated = true
+        }
+      } else {
+        const newSL = +(s.ask + p.trailingStopPips * pipSize).toFixed(s.digits)
+        if (!p.sl || newSL < p.sl) {
+          p.sl = newSL
+          p.trailingActivated = true
+        }
+      }
+    }
+    // SL/TP hit detection untuk SEMUA posisi (trailing atau non-trailing)
     if (p.side === 'BUY') {
-      const newSL = +(s.bid - p.trailingStopPips * pipSize).toFixed(s.digits)
-      if (!p.sl || newSL > p.sl) {
-        p.sl = newSL
-        p.trailingActivated = true
-      }
-      // TP hit
-      if (p.tp && s.bid >= p.tp) {
-        closePosition(p.ticket, 'tp')
-      }
-      // SL hit
-      if (p.sl && s.bid <= p.sl) {
-        closePosition(p.ticket, p.trailingActivated ? 'trailing' : 'sl')
-      }
+      if (p.tp && s.bid >= p.tp) { closePosition(p.ticket, 'tp'); continue }
+      if (p.sl && s.bid <= p.sl) { closePosition(p.ticket, p.trailingActivated ? 'trailing' : 'sl'); continue }
     } else {
-      const newSL = +(s.ask + p.trailingStopPips * pipSize).toFixed(s.digits)
-      if (!p.sl || newSL < p.sl) {
-        p.sl = newSL
-        p.trailingActivated = true
-      }
-      if (p.tp && s.ask <= p.tp) closePosition(p.ticket, 'tp')
-      if (p.sl && s.ask >= p.sl) closePosition(p.ticket, p.trailingActivated ? 'trailing' : 'sl')
+      if (p.tp && s.ask <= p.tp) { closePosition(p.ticket, 'tp'); continue }
+      if (p.sl && s.ask >= p.sl) { closePosition(p.ticket, p.trailingActivated ? 'trailing' : 'sl'); continue }
     }
   }
 
@@ -439,10 +445,10 @@ function openMarket(symbol: string, side: 'BUY' | 'SELL', lots: number, opts?: {
     isAuto: opts?.isAuto ?? false,
     trailingStopPips: opts?.trailingStopPips,
   })
-  const notional = lots * s.contractSize
+  const notional = lots * s.contractSize * price  // margin = (lots * contractSize * price) / leverage
   const usedMargin = notional / mt5.leverage
   mt5.margin = +(mt5.margin + usedMargin).toFixed(2)
-  logEvent('info', 'trading', `OPEN ${side} ${lots} ${symbol} @ ${price}`, { ticket, sl: opts?.sl, tp: opts?.tp, isAuto: opts?.isAuto })
+  logEvent('info', 'trading', `OPEN ${side} ${lots} ${symbol} @ ${price}`, { ticket, sl: opts?.sl, tp: opts?.tp, isAuto: opts?.isAuto, margin: usedMargin })
   return { ok: true, ticket }
 }
 
@@ -452,9 +458,10 @@ function closePosition(ticket: number, reason: TradeHistory['closeReason'] = 'ma
   const profit = computeProfit(p)
   mt5.balance = +(mt5.balance + profit).toFixed(2)
   const s = SYMBOLS[p.symbol]
-  const notional = p.lots * s.contractSize
+  // Margin = lots * contractSize * price / leverage (gunakan openPrice sebagai basis)
+  const notional = p.lots * s.contractSize * p.openPrice
   const usedMargin = notional / mt5.leverage
-  mt5.margin = +(mt5.margin - usedMargin).toFixed(2)
+  mt5.margin = Math.max(0, +(mt5.margin - usedMargin).toFixed(2))
   const closePrice = p.side === 'BUY' ? s.bid : s.ask
   const pnlPips = +((p.side === 'BUY' ? closePrice - p.openPrice : p.openPrice - closePrice) / s.pipSize).toFixed(1)
   const durationMs = Date.now() - new Date(p.openTime).getTime()
@@ -485,21 +492,44 @@ function partialClose(ticket: number, fraction: number): { ok: boolean; msg?: st
   const p = positions.get(ticket)
   if (!p) return { ok: false, msg: 'Posisi tidak ditemukan' }
   if (fraction <= 0 || fraction >= 1) return { ok: false, msg: 'Fraction harus 0 < f < 1' }
-  const closeLots = +(p.lots * fraction).toFixed(2)
-  if (closeLots < 0.01) return { ok: false, msg: 'Lot tersisa terlalu kecil' }
+  // Gunakan originalLots untuk konsistensi (50% berarti 50% dari posisi awal, bukan sisa)
+  const baseLots = p.originalLots ?? p.lots
+  const closeLots = +(baseLots * fraction).toFixed(2)
+  if (closeLots < 0.01) return { ok: false, msg: 'Lot tutup terlalu kecil' }
+  if (closeLots >= p.lots) return { ok: false, msg: 'Lot tutup melebihi lot tersisa' }
   const s = SYMBOLS[p.symbol]
   const closePrice = p.side === 'BUY' ? s.bid : s.ask
   const profit = +((p.side === 'BUY' ? closePrice - p.openPrice : p.openPrice - closePrice) * closeLots * s.contractSize).toFixed(2)
   mt5.balance = +(mt5.balance + profit).toFixed(2)
-  // kurangi margin
-  const oldNotional = p.lots * s.contractSize
+  // kurangi margin berbasis price (openPrice)
+  const oldNotional = p.lots * s.contractSize * p.openPrice
   const newLots = +(p.lots - closeLots).toFixed(2)
-  const newNotional = newLots * s.contractSize
+  const newNotional = newLots * s.contractSize * p.openPrice
   const marginDiff = (oldNotional - newNotional) / mt5.leverage
-  mt5.margin = +(mt5.margin - marginDiff).toFixed(2)
+  mt5.margin = Math.max(0, +(mt5.margin - marginDiff).toFixed(2))
   p.lots = newLots
   p.partialClosed = true
-  logEvent('info', 'trading', `PARTIAL CLOSE #${ticket} ${fraction * 100}% P&L=${profit}`, { ticket, profit, remainingLots: newLots })
+  // Catat ke tradeHistory (partial close juga = trade event)
+  const pnlPips = +((p.side === 'BUY' ? closePrice - p.openPrice : p.openPrice - closePrice) / s.pipSize).toFixed(1)
+  const durationMs = Date.now() - new Date(p.openTime).getTime()
+  tradeHistory.unshift({
+    ticket: p.ticket,
+    symbol: p.symbol,
+    side: p.side,
+    lots: closeLots,
+    openPrice: p.openPrice,
+    closePrice,
+    openTime: p.openTime,
+    closeTime: new Date().toISOString(),
+    profit,
+    pnlPips,
+    strategyId: p.strategyId,
+    isAuto: p.isAuto,
+    closeReason: 'manual',
+    durationMs,
+  })
+  if (tradeHistory.length > 500) tradeHistory.length = 500
+  logEvent('info', 'trading', `PARTIAL CLOSE #${ticket} ${fraction * 100}% (${closeLots} lots) P&L=${profit}`, { ticket, profit, remainingLots: newLots })
   return { ok: true, profit, remainingLots: newLots }
 }
 
@@ -651,11 +681,15 @@ function evaluateAutoTradeRules() {
       const nowMs = Date.now()
       for (const n of NEWS) {
         if (n.impact !== (rule.impactFilter ?? 'high')) continue
-        if (rule.countryFilter && n.country !== rule.countryFilter) continue
+        if (rule.countryFilter && n.country !== rule.countryFilter && n.currency !== rule.countryFilter) continue
         const timeToNews = new Date(n.eventTime).getTime() - nowMs
         if (timeToNews > 0 && timeToNews < minutesBefore * 60 * 1000) {
           flattenAll('pre_news_flatten')
           logEvent('warn', 'strategy', `Auto-flatten pre-news: ${n.title} in ${Math.round(timeToNews / 60000)}min`)
+          // Disable rule sementara agar tidak re-trigger tiap tick
+          rule.enabled = false
+          // Re-enable setelah 30 menit (lebih lama dari durasi news impact)
+          setTimeout(() => { rule.enabled = true; logEvent('info', 'strategy', 'Pre-news flatten rule re-enabled') }, 30 * 60 * 1000)
           break
         }
       }
@@ -917,13 +951,14 @@ io.on('connection', (socket) => {
     const grossLoss = Math.abs(trades.filter((t) => t.profit <= 0).reduce((a, t) => a + t.profit, 0))
     const winRate = trades.length > 0 ? (wins / trades.length) * 100 : 0
     const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : 0
-    // Max drawdown
-    let peak = balance, maxDD = 0
-    let runningBal = cfg.initialBalance ?? 10000
+    // Max drawdown - init peak dengan initialBalance (BUKAN final balance)
+    const initialBal = cfg.initialBalance ?? 10000
+    let peak = initialBal, maxDD = 0
+    let runningBal = initialBal
     for (const t of trades) {
       runningBal += t.profit
       peak = Math.max(peak, runningBal)
-      maxDD = Math.max(maxDD, ((peak - runningBal) / peak) * 100)
+      if (peak > 0) maxDD = Math.max(maxDD, ((peak - runningBal) / peak) * 100)
     }
     socket.emit('backtest:result', {
       ok: true,

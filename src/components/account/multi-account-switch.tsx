@@ -53,7 +53,7 @@ export function MultiAccountSwitch() {
                   <div className="text-[10px] text-muted-foreground">#{a.login} · {a.server} · {a.accountType}</div>
                 </button>
                 {a.id === activeId && <Check className="size-3 text-primary" />}
-                <Button size="sm" variant="ghost" className="h-6 px-1" onClick={() => deleteAccount(a.id)}>
+                <Button size="sm" variant="ghost" className="h-6 px-1" onClick={() => { useExtMarketStore.getState().setAccounts(useExtMarketStore.getState().accounts.filter((x) => x.id !== a.id)); deleteAccount(a.id) }}>
                   <Trash2 className="size-3" />
                 </Button>
               </div>
@@ -94,11 +94,14 @@ export function MultiAccountSwitch() {
                     className="h-7 flex-1 text-xs"
                     onClick={() => {
                       if (!label || !login) return
-                      addAccount({
+                      const newAcc = {
                         id: 'acc_' + Math.random().toString(36).slice(2),
                         label, login, server, broker: 'FINEX Indonesia',
                         accountType: type, isDefault: false, isActive: true,
-                      })
+                      }
+                      // Optimistic local + socket
+                      useExtMarketStore.getState().setAccounts([...useExtMarketStore.getState().accounts, newAcc])
+                      addAccount(newAcc)
                       setLabel(''); setLogin(''); setShowAdd(false)
                       toast.success('Akun ditambahkan')
                     }}

@@ -1,16 +1,17 @@
 'use client'
 
 import { useState } from 'react'
-import { Minus, Pencil, Trash2, TrendingUp, Type } from 'lucide-react'
+import { Minus, Pencil, Trash2, TrendingUp } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useUIStore } from '@/store/ui'
 import { useExtMarketStore } from '@/store/extended'
+import { useMarketStore } from '@/store/market'
 import { useMt5Socket } from '@/lib/mt5/socket'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import type { DrawingObject } from '@/lib/types/trade'
 
 type DrawType = 'trendline' | 'horizontal' | 'fibonacci' | 'rectangle' | 'text'
 
@@ -23,12 +24,18 @@ export function DrawingToolbar() {
 
   const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#a855f7']
 
+  const persistDrawing = (drawing: DrawingObject) => {
+    // Optimistic local update + socket sync
+    useExtMarketStore.getState().addDrawing(drawing)
+    addDrawing(drawing)
+  }
+
   const addHHorizontalLine = () => {
     const prices = useMarketStore.getState().prices
     const p = prices[activeSymbol]
     if (!p) return
     const price = p.bid
-    addDrawing({
+    const drawing: DrawingObject = {
       id: 'draw_' + Date.now(),
       symbol: activeSymbol,
       type: 'horizontal',
@@ -37,7 +44,8 @@ export function DrawingToolbar() {
       label: 'H-Line',
       visible: true,
       createdAt: new Date().toISOString(),
-    })
+    }
+    persistDrawing(drawing)
     toast.success(`Horizontal line @ ${price.toFixed(p.digits)}`)
   }
 
@@ -45,19 +53,21 @@ export function DrawingToolbar() {
     const prices = useMarketStore.getState().prices
     const p = prices[activeSymbol]
     if (!p || p.history.length < 2) return
-    addDrawing({
+    const histStart = p.history[Math.max(0, p.history.length - 30)]
+    const drawing: DrawingObject = {
       id: 'draw_' + Date.now(),
       symbol: activeSymbol,
       type: 'trendline',
       points: [
-        { time: p.history[Math.max(0, p.history.length - 30)].t, price: p.history[Math.max(0, p.history.length - 30)].bid },
+        { time: histStart.t, price: histStart.bid },
         { time: Date.now(), price: p.bid },
       ],
       style: { color, lineWidth: 1 },
       label: 'Trend',
       visible: true,
       createdAt: new Date().toISOString(),
-    })
+    }
+    persistDrawing(drawing)
     toast.success('Trendline ditambahkan')
   }
 
@@ -68,7 +78,7 @@ export function DrawingToolbar() {
     const recent = p.history.slice(-30)
     const high = Math.max(...recent.map((h) => h.bid))
     const low = Math.min(...recent.map((h) => h.bid))
-    addDrawing({
+    const drawing: DrawingObject = {
       id: 'draw_' + Date.now(),
       symbol: activeSymbol,
       type: 'fibonacci',
@@ -80,8 +90,20 @@ export function DrawingToolbar() {
       label: 'Fib 0-100%',
       visible: true,
       createdAt: new Date().toISOString(),
-    })
+    }
+    persistDrawing(drawing)
     toast.success('Fibonacci ditambahkan')
+  }
+
+  const handleClear = () => {
+    // Optimistic local + socket
+    useExtMarketStore.getState().clearDrawings(activeSymbol)
+    clearDrawings(activeSymbol)
+  }
+
+  const handleDelete = (id: string) => {
+    useExtMarketStore.getState().deleteDrawing(id)
+    deleteDrawing(id)
   }
 
   const symbolDrawings = drawings.filter((d) => d.symbol === activeSymbol)
@@ -91,7 +113,7 @@ export function DrawingToolbar() {
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center justify-between text-base">
           <span>Drawing Tools · {activeSymbol}</span>
-          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => clearDrawings(activeSymbol)}>
+          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={handleClear}>
             <Trash2 className="size-3" /> Clear
           </Button>
         </CardTitle>
@@ -133,7 +155,7 @@ export function DrawingToolbar() {
                   <span className="size-2 rounded" style={{ background: d.style.color }} />
                   {d.type} {d.label && <span className="text-muted-foreground">· {d.label}</span>}
                 </span>
-                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => deleteDrawing(d.id)}>
+                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => handleDelete(d.id)}>
                   <Trash2 className="size-3" />
                 </Button>
               </div>
@@ -144,5 +166,3 @@ export function DrawingToolbar() {
     </Card>
   )
 }
-
-import { useMarketStore } from '@/store/market'

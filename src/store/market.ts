@@ -16,6 +16,17 @@ const EMPTY_MT5: Mt5Status = {
   currency: 'USD',
 }
 
+interface SymbolMeta {
+  symbol: string
+  bid: number
+  ask: number
+  digits: number
+  pipSize: number
+  contractSize: number
+  spreadPips: number
+  maxSpreadPips?: number
+}
+
 interface MarketState {
   // MT5
   mt5: Mt5Status
@@ -23,6 +34,9 @@ interface MarketState {
   // Prices: symbol -> { bid, ask, digits, history }
   prices: Record<string, SymbolPrice & { history: { t: number; bid: number; ask: number }[] }>
   setPrice: (p: SymbolPrice) => void
+  // Symbol metadata (digits, pipSize, contractSize, maxSpreadPips)
+  symbolsMeta: Record<string, SymbolMeta>
+  setSymbolsMeta: (s: SymbolMeta[]) => void
   // Positions
   positions: Position[]
   setPositions: (p: Position[]) => void
@@ -57,6 +71,12 @@ export const useMarketStore = create<MarketState>((set) => ({
         },
       }
     }),
+  symbolsMeta: {},
+  setSymbolsMeta: (s) => set((state) => {
+    const map: Record<string, SymbolMeta> = {}
+    for (const sym of s) map[sym.symbol] = sym
+    return { symbolsMeta: { ...state.symbolsMeta, ...map } }
+  }),
   positions: [],
   setPositions: (p) => set({ positions: p }),
   news: [],

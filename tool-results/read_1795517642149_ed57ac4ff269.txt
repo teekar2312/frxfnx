@@ -1,0 +1,963 @@
+     1→     1→// MT5 Bridge Mini-Service v2 — with all 20 advanced features
+     2→     2→// - Pending Orders (Buy/Sell Stop/Limit) for Strategi B
+     3→     3→// - Trailing Stop & Partial Close
+     4→     4→// - Spread Monitor & Auto-Reject
+     5→     5→// - Alerts Engine (price/news/spread/margin/daily-stop)
+     6→     6→// - Multi-Account switching
+     7→     7→// - Auto-Disable Trading Pre-News (flatten positions)
+     8→     8→// - Currency Strength meter (rolling basis)
+     9→     9→// - Trade Timer per position
+    10→    10→// - Backtest API (run synthetic strategy on historical ticks)
+    11→    11→// - Trade Journal entries
+    12→    12→// - Hot Keys
+    13→    13→// - Drawing objects persistence (in-memory)
+    14→    14→// - Copy Trade subscription (in-memory)
+    15→    15→
+    16→    16→import { createServer } from 'http'
+    17→    17→import { Server } from 'socket.io'
+    18→    18→
+    19→    19→const PORT = 3004
+    20→    20→
+    21→    21→// ============================================================
+    22→    22→// SYMBOLS
+    23→    23→// ============================================================
+    24→    24→interface SymbolState {
+    25→    25→  symbol: string
+    26→    26→  bid: number
+    27→    27→  ask: number
+    28→    28→  digits: number
+    29→    29→  pipSize: number
+    30→    30→  contractSize: number
+    31→    31→  spreadPips: number
+    32→    32→  maxSpreadPips: number  // for spread monitor auto-reject
+    33→    33→}
+    34→    34→
+    35→    35→const SYMBOLS: Record<string, SymbolState> = {
+    36→    36→  'XAU/USD': { symbol: 'XAU/USD', bid: 2635.50, ask: 2635.80, digits: 2, pipSize: 0.10, contractSize: 100, spreadPips: 3, maxSpreadPips: 8 },
+    37→    37→  'EUR/USD': { symbol: 'EUR/USD', bid: 1.08320, ask: 1.08332, digits: 5, pipSize: 0.0001, contractSize: 100000, spreadPips: 1.2, maxSpreadPips: 4 },
+    38→    38→  'GBP/USD': { symbol: 'GBP/USD', bid: 1.26580, ask: 1.26595, digits: 5, pipSize: 0.0001, contractSize: 100000, spreadPips: 1.5, maxSpreadPips: 5 },
+    39→    39→  'USD/JPY': { symbol: 'USD/JPY', bid: 154.320, ask: 154.335, digits: 3, pipSize: 0.01, contractSize: 100000, spreadPips: 1.4, maxSpreadPips: 4 },
+    40→    40→}
+    41→    41→
+    42→    42→// Historical tick buffer for backtest & indicators
+    43→    43→const TICK_HISTORY: Record<string, { time: number; bid: number; ask: number }[]> = {}
+    44→    44→for (const sym of Object.keys(SYMBOLS)) TICK_HISTORY[sym] = []
+    45→    45→const MAX_HISTORY = 5000 // ~80 menit pada 1s tick
+    46→    46→
+    47→    47→// ============================================================
+    48→    48→// POSISI & PENDING ORDERS
+    49→    49→// ============================================================
+    50→    50→interface Position {
+    51→    51→  ticket: number
+    52→    52→  symbol: string
+    53→    53→  side: 'BUY' | 'SELL'
+    54→    54→  lots: number
+    55→    55→  originalLots?: number  // untuk partial close
+    56→    56→  openPrice: number
+    57→    57→  sl?: number
+    58→    58→  tp?: number
+    59→    59→  openTime: string
+    60→    60→  strategyId?: string
+    61→    61→  isAuto: boolean
+    62→    62→  trailingStopPips?: number
+    63→    63→  trailingActivated?: boolean
+    64→    64→  partialClosed?: boolean
+    65→    65→}
+    66→    66→
+    67→    67→interface PendingOrder {
+    68→    68→  ticket: number
+    69→    69→  symbol: string
+    70→    70→  orderType: 'BUY_STOP' | 'SELL_STOP' | 'BUY_LIMIT' | 'SELL_LIMIT'
+    71→    71→  lots: number
+    72→    72→  triggerPrice: number
+    73→    73→  sl?: number
+    74→    74→  tp?: number
+    75→    75→  status: 'pending' | 'filled' | 'cancelled' | 'expired'
+    76→    76→  strategyId?: string
+    77→    77→  isAuto: boolean
+    78→    78→  expiresAt?: string
+    79→    79→  createdAt: string
+    80→    80→}
+    81→    81→
+    82→    82→const positions = new Map<number, Position>()
+    83→    83→const pendingOrders = new Map<number, PendingOrder>()
+    84→    84→let ticketSeq = 100000
+    85→    85→let pendingSeq = 200000
+    86→    86→
+    87→    87→// Trade history (untuk journal & analytics)
+    88→    88→interface TradeHistory {
+    89→    89→  ticket: number
+    90→    90→  symbol: string
+    91→    91→  side: 'BUY' | 'SELL'
+    92→    92→  lots: number
+    93→    93→  openPrice: number
+    94→    94→  closePrice: number
+    95→    95→  openTime: string
+    96→    96→  closeTime: string
+    97→    97→  profit: number
+    98→    98→  pnlPips: number
+    99→    99→  strategyId?: string
+   100→   100→  isAuto: boolean
+   101→   101→  closeReason: 'manual' | 'sl' | 'tp' | 'trailing' | 'auto_flatten'
+   102→   102→  durationMs: number
+   103→   103→}
+   104→   104→const tradeHistory: TradeHistory[] = []
+   105→   105→
+   106→   106→// ============================================================
+   107→   107→// MT5 CONNECTION STATE
+   108→   108→// ============================================================
+   109→   109→interface Mt5ConnectionState {
+   110→   110→  connected: boolean
+   111→   111→  launching: boolean
+   112→   112→  lastError?: string
+   113→   113→  login?: string
+   114→   114→  server?: string
+   115→   115→  broker?: string
+   116→   116→  equity: number
+   117→   117→  balance: number
+   118→   118→  margin: number
+   119→   119→  freeMargin: number
+   120→   120→  marginLevel: number
+   121→   121→  leverage: number
+   122→   122→  currency: string
+   123→   123→  connectedAt?: string
+   124→   124→}
+   125→   125→
+   126→   126→const mt5: Mt5ConnectionState = {
+   127→   127→  connected: false,
+   128→   128→  launching: false,
+   129→   129→  broker: 'FINEX Indonesia',
+   130→   130→  equity: 10000,
+   131→   131→  balance: 10000,
+   132→   132→  margin: 0,
+   133→   133→  freeMargin: 10000,
+   134→   134→  marginLevel: 0,
+   135→   135→  leverage: 500,
+   136→   136→  currency: 'USD',
+   137→   137→}
+   138→   138→
+   139→   139→// ============================================================
+   140→   140→// MULTI-ACCOUNT
+   141→   141→// ============================================================
+   142→   142→interface AccountConfig {
+   143→   143→  id: string
+   144→   144→  label: string
+   145→   145→  login: string
+   146→   146→  server: string
+   147→   147→  broker: string
+   148→   148→  accountType: 'live' | 'demo' | 'contest'
+   149→   149→  isDefault: boolean
+   150→   150→  isActive: boolean
+   151→   151→}
+   152→   152→const accounts: AccountConfig[] = [
+   153→   153→  { id: 'acc_demo', label: 'FINEX Demo', login: '12345', server: 'FINEX-Demo', broker: 'FINEX Indonesia', accountType: 'demo', isDefault: true, isActive: true },
+   154→   154→  { id: 'acc_live', label: 'FINEX Live #1', login: '67890', server: 'FINEX-Live', broker: 'FINEX Indonesia', accountType: 'live', isDefault: false, isActive: true },
+   155→   155→]
+   156→   156→
+   157→   157→// ============================================================
+   158→   158→// ALERTS
+   159→   159→// ============================================================
+   160→   160→interface AlertRule {
+   161→   161→  id: string
+   162→   162→  type: 'price_above' | 'price_below' | 'news_pre' | 'spread_wide' | 'sl_tp_hit' | 'margin_low' | 'daily_stop'
+   163→   163→  symbol?: string
+   164→   164→  condition: any
+   165→   165→  message: string
+   166→   166→  severity: 'info' | 'warn' | 'critical'
+   167→   167→  enabled: boolean
+   168→   168→  triggerCount: number
+   169→   169→  lastTriggeredAt?: string
+   170→   170→}
+   171→   171→
+   172→   172→interface AlertEvent {
+   173→   173→  id: string
+   174→   174→  ruleId: string
+   175→   175→  type: string
+   176→   176→  message: string
+   177→   177→  severity: 'info' | 'warn' | 'critical'
+   178→   178→  timestamp: string
+   179→   179→  acknowledged: boolean
+   180→   180→}
+   181→   181→
+   182→   182→const alertRules: AlertRule[] = [
+   183→   183→  { id: 'ar1', type: 'daily_stop', condition: { pct: 3 }, message: 'Daily stop 3% tercapai. Trading dijeda hari ini.', severity: 'critical', enabled: true, triggerCount: 0 },
+   184→   184→  { id: 'ar2', type: 'margin_low', condition: { pct: 50 }, message: 'Margin level < 50%. Risiko margin call.', severity: 'critical', enabled: true, triggerCount: 0 },
+   185→   185→  { id: 'ar3', type: 'spread_wide', condition: { pips: 5 }, message: 'Spread melebar > 5 pips pada {symbol}. Hindari entry.', severity: 'warn', enabled: true, triggerCount: 0 },
+   186→   186→]
+   187→   187→const alertEvents: AlertEvent[] = []
+   188→   188→
+   189→   189→// ============================================================
+   190→   190→// DRAWING OBJECTS
+   191→   191→// ============================================================
+   192→   192→interface DrawingObject {
+   193→   193→  id: string
+   194→   194→  symbol: string
+   195→   195→  type: 'trendline' | 'horizontal' | 'fibonacci' | 'rectangle' | 'text'
+   196→   196→  points: { time: number; price: number }[]
+   197→   197→  style: { color: string; lineWidth: number; dashed?: boolean }
+   198→   198→  label?: string
+   199→   199→  visible: boolean
+   200→   200→  createdAt: string
+   201→   201→}
+   202→   202→const drawings: DrawingObject[] = []
+   203→   203→
+   204→   204→// ============================================================
+   205→   205→// COPY TRADE
+   206→   206→// ============================================================
+   207→   207→interface CopyTradeSub {
+   208→   208→  id: string
+   209→   209→  sourceLogin: string
+   210→   210→  targetLogin: string
+   211→   211→  scaleLots: number
+   212→   212→  reverseMode: boolean
+   213→   213→  enabled: boolean
+   214→   214→  totalCopied: number
+   215→   215→}
+   216→   216→const copyTradeSubs: CopyTradeSub[] = []
+   217→   217→
+   218→   218→// ============================================================
+   219→   219→// AUTO-DISABLE PRE-NEWS RULES
+   220→   220→// ============================================================
+   221→   221→interface AutoTradeRule {
+   222→   222→  id: string
+   223→   223→  name: string
+   224→   224→  enabled: boolean
+   225→   225→  type: 'pre_news_flatten' | 'max_daily_loss' | 'max_weekly_loss' | 'trailing_stop_template'
+   226→   226→  minutesBefore?: number
+   227→   227→  impactFilter?: 'high' | 'medium'
+   228→   228→  countryFilter?: string
+   229→   229→  flattenAction?: 'close_all' | 'reduce_50' | 'hedge'
+   230→   230→}
+   231→   231→const autoTradeRules: AutoTradeRule[] = [
+   232→   232→  { id: 'ar_pre_news', name: 'Pre-News Flatten (High Impact)', enabled: false, type: 'pre_news_flatten', minutesBefore: 2, impactFilter: 'high', countryFilter: 'USD', flattenAction: 'close_all' },
+   233→   233→  { id: 'ar_daily_loss', name: 'Max Daily Loss 3%', enabled: true, type: 'max_daily_loss', flattenAction: 'close_all' },
+   234→   234→  { id: 'ar_weekly_loss', name: 'Max Weekly Loss 5%', enabled: true, type: 'max_weekly_loss', flattenAction: 'close_all' },
+   235→   235→]
+   236→   236→
+   237→   237→// ============================================================
+   238→   238→// IO SETUP
+   239→   239→// ============================================================
+   240→   240→const httpServer = createServer()
+   241→   241→const io = new Server(httpServer, {
+   242→   242→  path: '/',
+   243→   243→  cors: { origin: '*', methods: ['GET', 'POST'] },
+   244→   244→  pingTimeout: 60000,
+   245→   245→  pingInterval: 25000,
+   246→   246→})
+   247→   247→
+   248→   248→function logEvent(level: string, source: string, message: string, details?: any) {
+   249→   249→  console.log(`[${level}] [${source}] ${message}${details ? ' :: ' + JSON.stringify(details) : ''}`)
+   250→   250→  io.emit('log', { id: Math.random().toString(36).slice(2), level, source, message, details, timestamp: new Date().toISOString() })
+   251→   251→}
+   252→   252→
+   253→   253→// ============================================================
+   254→   254→// MT5 LAUNCH
+   255→   255→// ============================================================
+   256→   256→async function launchMt5(path?: string, login?: string, server?: string) {
+   257→   257→  if (mt5.launching || mt5.connected) return { ok: false, msg: 'MT5 sudah running atau sedang launching' }
+   258→   258→  mt5.launching = true
+   259→   259→  if (login) mt5.login = login
+   260→   260→  if (server) mt5.server = server
+   261→   261→  logEvent('info', 'mt5', 'Launching MT5 terminal', { path: path || 'C:\\Program Files\\FINEX Indonesia\\MetaTrader 5\\terminal64.exe' })
+   262→   262→  await new Promise((r) => setTimeout(r, 1500))
+   263→   263→  mt5.launching = false
+   264→   264→  mt5.connected = true
+   265→   265→  mt5.connectedAt = new Date().toISOString()
+   266→   266→  logEvent('info', 'mt5', 'MT5 connected', { login: mt5.login, server: mt5.server })
+   267→   267→  io.emit('mt5:status', mt5)
+   268→   268→  return { ok: true, msg: 'MT5 launched' }
+   269→   269→}
+   270→   270→
+   271→   271→function disconnectMt5() {
+   272→   272→  mt5.connected = false
+   273→   273→  mt5.connectedAt = undefined
+   274→   274→  logEvent('warn', 'mt5', 'MT5 disconnected')
+   275→   275→  io.emit('mt5:status', mt5)
+   276→   276→}
+   277→   277→
+   278→   278→// ============================================================
+   279→   279→// PRICE TICK + INDICATORS UPDATE
+   280→   280→// ============================================================
+   281→   281→const sessionStartBalance = { date: '', balance: 10000 }
+   282→   282→const weekStartBalance = { week: '', balance: 10000 }
+   283→   283→
+   284→   284→function step() {
+   285→   285→  for (const s of Object.values(SYMBOLS)) {
+   286→   286→    // volatilitas ~ 1 pip setiap tick + sedikit random spike untuk news simulation
+   287→   287→    const vol = s.pipSize * (0.5 + Math.random() * 1.5)
+   288→   288→    const drift = (Math.random() - 0.5) * vol * 4
+   289→   289→    s.bid = +(s.bid + drift).toFixed(s.digits)
+   290→   290→    const spread = s.pipSize * s.spreadPips
+   291→   291→    s.ask = +(s.bid + spread).toFixed(s.digits)
+   292→   292→    // simpan ke history
+   293→   293→    TICK_HISTORY[s.symbol].push({ time: Date.now(), bid: s.bid, ask: s.ask })
+   294→   294→    if (TICK_HISTORY[s.symbol].length > MAX_HISTORY) TICK_HISTORY[s.symbol].shift()
+   295→   295→  }
+   296→   296→
+   297→   297→  // emit tick
+   298→   298→  io.emit('price:tick', {
+   299→   299→    ts: Date.now(),
+   300→   300→    prices: Object.values(SYMBOLS).map((s) => ({ symbol: s.symbol, bid: s.bid, ask: s.ask, digits: s.digits })),
+   301→   301→  })
+   302→   302→
+   303→   303→  // update equity + positions
+   304→   304→  recomputeEquity()
+   305→   305→
+   306→   306→  // emit positions with profit + duration
+   307→   307→  const now = Date.now()
+   308→   308→  const posArr = Array.from(positions.values()).map((p) => ({
+   309→   309→    ...p,
+   310→   310→    bid: SYMBOLS[p.symbol]?.bid ?? 0,
+   311→   311→    ask: SYMBOLS[p.symbol]?.ask ?? 0,
+   312→   312→    profit: computeProfit(p),
+   313→   313→    durationMs: now - new Date(p.openTime).getTime(),
+   314→   314→  }))
+   315→   315→  io.emit('positions:update', posArr)
+   316→   316→
+   317→   317→  // emit pending orders
+   318→   318→  const pendArr = Array.from(pendingOrders.values())
+   319→   319→  io.emit('pending:orders:update', pendArr)
+   320→   320→
+   321→   321→  // Process pending orders (check trigger)
+   322→   322→  for (const po of pendingOrders.values()) {
+   323→   323→    if (po.status !== 'pending') continue
+   324→   324→    const s = SYMBOLS[po.symbol]
+   325→   325→    if (!s) continue
+   326→   326→    let triggered = false
+   327→   327→    if (po.orderType === 'BUY_STOP' && s.ask >= po.triggerPrice) triggered = true
+   328→   328→    if (po.orderType === 'SELL_STOP' && s.bid <= po.triggerPrice) triggered = true
+   329→   329→    if (po.orderType === 'BUY_LIMIT' && s.ask <= po.triggerPrice) triggered = true
+   330→   330→    if (po.orderType === 'SELL_LIMIT' && s.bid >= po.triggerPrice) triggered = true
+   331→   331→    if (triggered) {
+   332→   332→      po.status = 'filled'
+   333→   333→      const side = po.orderType.startsWith('BUY') ? 'BUY' : 'SELL'
+   334→   334→      const r = openMarket(po.symbol, side, po.lots, { sl: po.sl, tp: po.tp, isAuto: po.isAuto, strategyId: po.strategyId })
+   335→   335→      if (r.ok) {
+   336→   336→        logEvent('info', 'trading', `PENDING #${po.ticket} FILLED → position #${r.ticket} ${po.orderType} ${po.lots} ${po.symbol} @ ${po.triggerPrice}`)
+   337→   337→        io.emit('pending:filled', { pendingTicket: po.ticket, positionTicket: r.ticket })
+   338→   338→      }
+   339→   339→    }
+   340→   340→    // expiration check
+   341→   341→    if (po.expiresAt && new Date(po.expiresAt).getTime() < now) {
+   342→   342→      po.status = 'expired'
+   343→   343→      logEvent('info', 'trading', `PENDING #${po.ticket} EXPIRED`)
+   344→   344→    }
+   345→   345→  }
+   346→   346→
+   347→   347→  // Trailing stop
+   348→   348→  for (const p of positions.values()) {
+   349→   349→    if (!p.trailingStopPips || p.trailingStopPips <= 0) continue
+   350→   350→    const s = SYMBOLS[p.symbol]
+   351→   351→    if (!s) continue
+   352→   352→    const pipSize = s.pipSize
+   353→   353→    if (p.side === 'BUY') {
+   354→   354→      const newSL = +(s.bid - p.trailingStopPips * pipSize).toFixed(s.digits)
+   355→   355→      if (!p.sl || newSL > p.sl) {
+   356→   356→        p.sl = newSL
+   357→   357→        p.trailingActivated = true
+   358→   358→      }
+   359→   359→      // TP hit
+   360→   360→      if (p.tp && s.bid >= p.tp) {
+   361→   361→        closePosition(p.ticket, 'tp')
+   362→   362→      }
+   363→   363→      // SL hit
+   364→   364→      if (p.sl && s.bid <= p.sl) {
+   365→   365→        closePosition(p.ticket, p.trailingActivated ? 'trailing' : 'sl')
+   366→   366→      }
+   367→   367→    } else {
+   368→   368→      const newSL = +(s.ask + p.trailingStopPips * pipSize).toFixed(s.digits)
+   369→   369→      if (!p.sl || newSL < p.sl) {
+   370→   370→        p.sl = newSL
+   371→   371→        p.trailingActivated = true
+   372→   372→      }
+   373→   373→      if (p.tp && s.ask <= p.tp) closePosition(p.ticket, 'tp')
+   374→   374→      if (p.sl && s.ask >= p.sl) closePosition(p.ticket, p.trailingActivated ? 'trailing' : 'sl')
+   375→   375→    }
+   376→   376→  }
+   377→   377→
+   378→   378→  // Alerts evaluation
+   379→   379→  evaluateAlerts()
+   380→   380→  // Auto-disable pre-news
+   381→   381→  evaluateAutoTradeRules()
+   382→   382→}
+   383→   383→
+   384→   384→function computeProfit(p: Position): number {
+   385→   385→  const s = SYMBOLS[p.symbol]
+   386→   386→  if (!s) return 0
+   387→   387→  const close = p.side === 'BUY' ? s.bid : s.ask
+   388→   388→  const diff = p.side === 'BUY' ? close - p.openPrice : p.openPrice - close
+   389→   389→  return +(diff * p.lots * s.contractSize).toFixed(2)
+   390→   390→}
+   391→   391→
+   392→   392→function recomputeEquity() {
+   393→   393→  let floating = 0
+   394→   394→  for (const p of positions.values()) floating += computeProfit(p)
+   395→   395→  mt5.equity = +(mt5.balance + floating).toFixed(2)
+   396→   396→  mt5.freeMargin = +(mt5.equity - mt5.margin).toFixed(2)
+   397→   397→  mt5.marginLevel = mt5.margin > 0 ? +((mt5.equity / mt5.margin) * 100).toFixed(2) : 0
+   398→   398→}
+   399→   399→
+   400→   400→setInterval(step, 1000)
+   401→   401→
+   402→   402→// ============================================================
+   403→   403→// TRADING ACTIONS
+   404→   404→// ============================================================
+   405→   405→function isTradingAllowedNow(): boolean {
+   406→   406→  const now = new Date()
+   407→   407→  const day = now.getDay()
+   408→   408→  if (day === 0 || day === 6) return false
+   409→   409→  const hhmm = now.getHours() * 100 + now.getMinutes()
+   410→   410→  return hhmm >= 800 && hhmm <= 2330
+   411→   411→}
+   412→   412→
+   413→   413→function openMarket(symbol: string, side: 'BUY' | 'SELL', lots: number, opts?: { sl?: number; tp?: number; isAuto?: boolean; strategyId?: string; trailingStopPips?: number; originalLots?: number }): { ok: boolean; ticket?: number; msg?: string } {
+   414→   414→  if (!mt5.connected) return { ok: false, msg: 'MT5 belum terhubung' }
+   415→   415→  const s = SYMBOLS[symbol]
+   416→   416→  if (!s) return { ok: false, msg: 'Symbol tidak ditemukan' }
+   417→   417→  if (!isTradingAllowedNow()) return { ok: false, msg: 'Di luar jam trading (atau akhir pekan)' }
+   418→   418→
+   419→   419→  // Spread filter
+   420→   420→  const spreadPipsNow = (s.ask - s.bid) / s.pipSize
+   421→   421→  if (spreadPipsNow > s.maxSpreadPips) {
+   422→   422→    logEvent('warn', 'trading', `Spread reject: ${symbol} spread ${spreadPipsNow.toFixed(1)} pips > max ${s.maxSpreadPips}`)
+   423→   423→    return { ok: false, msg: `Spread terlalu lebar (${spreadPipsNow.toFixed(1)} pips > ${s.maxSpreadPips}). Entry ditolak.` }
+   424→   424→  }
+   425→   425→
+   426→   426→  const price = side === 'BUY' ? s.ask : s.bid
+   427→   427→  const ticket = ++ticketSeq
+   428→   428→  positions.set(ticket, {
+   429→   429→    ticket,
+   430→   430→    symbol,
+   431→   431→    side,
+   432→   432→    lots,
+   433→   433→    originalLots: opts?.originalLots ?? lots,
+   434→   434→    openPrice: price,
+   435→   435→    sl: opts?.sl,
+   436→   436→    tp: opts?.tp,
+   437→   437→    openTime: new Date().toISOString(),
+   438→   438→    strategyId: opts?.strategyId,
+   439→   439→    isAuto: opts?.isAuto ?? false,
+   440→   440→    trailingStopPips: opts?.trailingStopPips,
+   441→   441→  })
+   442→   442→  const notional = lots * s.contractSize
+   443→   443→  const usedMargin = notional / mt5.leverage
+   444→   444→  mt5.margin = +(mt5.margin + usedMargin).toFixed(2)
+   445→   445→  logEvent('info', 'trading', `OPEN ${side} ${lots} ${symbol} @ ${price}`, { ticket, sl: opts?.sl, tp: opts?.tp, isAuto: opts?.isAuto })
+   446→   446→  return { ok: true, ticket }
+   447→   447→}
+   448→   448→
+   449→   449→function closePosition(ticket: number, reason: TradeHistory['closeReason'] = 'manual'): { ok: boolean; msg?: string; profit?: number } {
+   450→   450→  const p = positions.get(ticket)
+   451→   451→  if (!p) return { ok: false, msg: 'Posisi tidak ditemukan' }
+   452→   452→  const profit = computeProfit(p)
+   453→   453→  mt5.balance = +(mt5.balance + profit).toFixed(2)
+   454→   454→  const s = SYMBOLS[p.symbol]
+   455→   455→  const notional = p.lots * s.contractSize
+   456→   456→  const usedMargin = notional / mt5.leverage
+   457→   457→  mt5.margin = +(mt5.margin - usedMargin).toFixed(2)
+   458→   458→  const closePrice = p.side === 'BUY' ? s.bid : s.ask
+   459→   459→  const pnlPips = +((p.side === 'BUY' ? closePrice - p.openPrice : p.openPrice - closePrice) / s.pipSize).toFixed(1)
+   460→   460→  const durationMs = Date.now() - new Date(p.openTime).getTime()
+   461→   461→  tradeHistory.unshift({
+   462→   462→    ticket: p.ticket,
+   463→   463→    symbol: p.symbol,
+   464→   464→    side: p.side,
+   465→   465→    lots: p.lots,
+   466→   466→    openPrice: p.openPrice,
+   467→   467→    closePrice,
+   468→   468→    openTime: p.openTime,
+   469→   469→    closeTime: new Date().toISOString(),
+   470→   470→    profit,
+   471→   471→    pnlPips,
+   472→   472→    strategyId: p.strategyId,
+   473→   473→    isAuto: p.isAuto,
+   474→   474→    closeReason: reason,
+   475→   475→    durationMs,
+   476→   476→  })
+   477→   477→  // keep last 500 trades
+   478→   478→  if (tradeHistory.length > 500) tradeHistory.length = 500
+   479→   479→  logEvent('info', 'trading', `CLOSE #${ticket} ${p.symbol} P&L=${profit} (${reason})`, { ticket, profit, reason })
+   480→   480→  positions.delete(ticket)
+   481→   481→  return { ok: true, profit }
+   482→   482→}
+   483→   483→
+   484→   484→function partialClose(ticket: number, fraction: number): { ok: boolean; msg?: string; profit?: number; remainingLots?: number } {
+   485→   485→  const p = positions.get(ticket)
+   486→   486→  if (!p) return { ok: false, msg: 'Posisi tidak ditemukan' }
+   487→   487→  if (fraction <= 0 || fraction >= 1) return { ok: false, msg: 'Fraction harus 0 < f < 1' }
+   488→   488→  const closeLots = +(p.lots * fraction).toFixed(2)
+   489→   489→  if (closeLots < 0.01) return { ok: false, msg: 'Lot tersisa terlalu kecil' }
+   490→   490→  const s = SYMBOLS[p.symbol]
+   491→   491→  const closePrice = p.side === 'BUY' ? s.bid : s.ask
+   492→   492→  const profit = +((p.side === 'BUY' ? closePrice - p.openPrice : p.openPrice - closePrice) * closeLots * s.contractSize).toFixed(2)
+   493→   493→  mt5.balance = +(mt5.balance + profit).toFixed(2)
+   494→   494→  // kurangi margin
+   495→   495→  const oldNotional = p.lots * s.contractSize
+   496→   496→  const newLots = +(p.lots - closeLots).toFixed(2)
+   497→   497→  const newNotional = newLots * s.contractSize
+   498→   498→  const marginDiff = (oldNotional - newNotional) / mt5.leverage
+   499→   499→  mt5.margin = +(mt5.margin - marginDiff).toFixed(2)
+   500→   500→  p.lots = newLots
+   501→   501→  p.partialClosed = true
+   502→   502→  logEvent('info', 'trading', `PARTIAL CLOSE #${ticket} ${fraction * 100}% P&L=${profit}`, { ticket, profit, remainingLots: newLots })
+   503→   503→  return { ok: true, profit, remainingLots: newLots }
+   504→   504→}
+   505→   505→
+   506→   506→function modifyPosition(ticket: number, sl?: number, tp?: number, trailingStopPips?: number) {
+   507→   507→  const p = positions.get(ticket)
+   508→   508→  if (!p) return { ok: false, msg: 'Posisi tidak ditemukan' }
+   509→   509→  if (sl !== undefined) p.sl = sl
+   510→   510→  if (tp !== undefined) p.tp = tp
+   511→   511→  if (trailingStopPips !== undefined) p.trailingStopPips = trailingStopPips
+   512→   512→  logEvent('info', 'trading', `MODIFY #${ticket} SL=${sl} TP=${tp} Trail=${trailingStopPips}`)
+   513→   513→  return { ok: true }
+   514→   514→}
+   515→   515→
+   516→   516→// ============================================================
+   517→   517→// PENDING ORDERS
+   518→   518→// ============================================================
+   519→   519→function placePendingOrder(p: {
+   520→   520→  symbol: string
+   521→   521→  orderType: 'BUY_STOP' | 'SELL_STOP' | 'BUY_LIMIT' | 'SELL_LIMIT'
+   522→   522→  lots: number
+   523→   523→  triggerPrice: number
+   524→   524→  sl?: number
+   525→   525→  tp?: number
+   526→   526→  isAuto?: boolean
+   527→   527→  strategyId?: string
+   528→   528→  expiresAt?: string
+   529→   529→}): { ok: boolean; ticket?: number; msg?: string } {
+   530→   530→  if (!mt5.connected) return { ok: false, msg: 'MT5 belum terhubung' }
+   531→   531→  const s = SYMBOLS[p.symbol]
+   532→   532→  if (!s) return { ok: false, msg: 'Symbol tidak ditemukan' }
+   533→   533→  if (!isTradingAllowedNow()) return { ok: false, msg: 'Di luar jam trading' }
+   534→   534→  // Validasi: BUY_STOP harus di atas ask, SELL_STOP di bawah bid, dst
+   535→   535→  if (p.orderType === 'BUY_STOP' && p.triggerPrice <= s.ask) return { ok: false, msg: 'BUY_STOP harus di atas ask saat ini' }
+   536→   536→  if (p.orderType === 'SELL_STOP' && p.triggerPrice >= s.bid) return { ok: false, msg: 'SELL_STOP harus di bawah bid saat ini' }
+   537→   537→  if (p.orderType === 'BUY_LIMIT' && p.triggerPrice >= s.ask) return { ok: false, msg: 'BUY_LIMIT harus di bawah ask saat ini' }
+   538→   538→  if (p.orderType === 'SELL_LIMIT' && p.triggerPrice <= s.bid) return { ok: false, msg: 'SELL_LIMIT harus di atas bid saat ini' }
+   539→   539→  const ticket = ++pendingSeq
+   540→   540→  pendingOrders.set(ticket, {
+   541→   541→    ticket,
+   542→   542→    symbol: p.symbol,
+   543→   543→    orderType: p.orderType,
+   544→   544→    lots: p.lots,
+   545→   545→    triggerPrice: p.triggerPrice,
+   546→   546→    sl: p.sl,
+   547→   547→    tp: p.tp,
+   548→   548→    status: 'pending',
+   549→   549→    strategyId: p.strategyId,
+   550→   550→    isAuto: p.isAuto ?? false,
+   551→   551→    expiresAt: p.expiresAt,
+   552→   552→    createdAt: new Date().toISOString(),
+   553→   553→  })
+   554→   554→  logEvent('info', 'trading', `PENDING ${p.orderType} ${p.lots} ${p.symbol} @ ${p.triggerPrice}`, { ticket })
+   555→   555→  return { ok: true, ticket }
+   556→   556→}
+   557→   557→
+   558→   558→function cancelPendingOrder(ticket: number) {
+   559→   559→  const po = pendingOrders.get(ticket)
+   560→   560→  if (!po) return { ok: false, msg: 'Pending order tidak ditemukan' }
+   561→   561→  po.status = 'cancelled'
+   562→   562→  logEvent('info', 'trading', `PENDING #${ticket} CANCELLED`)
+   563→   563→  return { ok: true }
+   564→   564→}
+   565→   565→
+   566→   566→// ============================================================
+   567→   567→// ALERTS ENGINE
+   568→   568→// ============================================================
+   569→   569→function evaluateAlerts() {
+   570→   570→  const now = new Date()
+   571→   571→  for (const rule of alertRules) {
+   572→   572→    if (!rule.enabled) continue
+   573→   573→    let triggered = false
+   574→   574→    let symbol: string | undefined
+   575→   575→    if (rule.type === 'daily_stop') {
+   576→   576→      // today's P&L
+   577→   577→      const today = now.toISOString().slice(0, 10)
+   578→   578→      if (sessionStartBalance.date !== today) {
+   579→   579→        sessionStartBalance.date = today
+   580→   580→        sessionStartBalance.balance = mt5.balance
+   581→   581→      }
+   582→   582→      const dayPnl = mt5.balance - sessionStartBalance.balance
+   583→   583→      const dayPnlPct = (dayPnl / sessionStartBalance.balance) * 100
+   584→   584→      if (dayPnlPct <= -(rule.condition.pct ?? 3)) triggered = true
+   585→   585→    } else if (rule.type === 'margin_low') {
+   586→   586→      if (mt5.marginLevel > 0 && mt5.marginLevel < (rule.condition.pct ?? 50)) triggered = true
+   587→   587→    } else if (rule.type === 'spread_wide') {
+   588→   588→      for (const s of Object.values(SYMBOLS)) {
+   589→   589→        const spreadPips = (s.ask - s.bid) / s.pipSize
+   590→   590→        if (spreadPips > (rule.condition.pips ?? 5)) {
+   591→   591→          triggered = true
+   592→   592→          symbol = s.symbol
+   593→   593→          break
+   594→   594→        }
+   595→   595→      }
+   596→   596→    } else if (rule.type === 'price_above' || rule.type === 'price_below') {
+   597→   597→      if (rule.symbol) {
+   598→   598→        const s = SYMBOLS[rule.symbol]
+   599→   599→        if (s) {
+   600→   600→          if (rule.type === 'price_above' && s.bid >= rule.condition.price) triggered = true
+   601→   601→          if (rule.type === 'price_below' && s.bid <= rule.condition.price) triggered = true
+   602→   602→        }
+   603→   603→      }
+   604→   604→    }
+   605→   605→    if (triggered) {
+   606→   606→      // cooldown 60s
+   607→   607→      if (rule.lastTriggeredAt && Date.now() - new Date(rule.lastTriggeredAt).getTime() < 60000) continue
+   608→   608→      rule.triggerCount++
+   609→   609→      rule.lastTriggeredAt = now.toISOString()
+   610→   610→      const msg = rule.message.replace('{symbol}', symbol ?? rule.symbol ?? '')
+   611→   611→      const ev: AlertEvent = {
+   612→   612→        id: 'alert_' + Math.random().toString(36).slice(2),
+   613→   613→        ruleId: rule.id,
+   614→   614→        type: rule.type,
+   615→   615→        message: msg,
+   616→   616→        severity: rule.severity,
+   617→   617→        timestamp: now.toISOString(),
+   618→   618→        acknowledged: false,
+   619→   619→      }
+   620→   620→      alertEvents.unshift(ev)
+   621→   621→      if (alertEvents.length > 100) alertEvents.length = 100
+   622→   622→      io.emit('alert:event', ev)
+   623→   623→      logEvent(rule.severity === 'critical' ? 'error' : 'warn', 'alert', msg, { ruleId: rule.id })
+   624→   624→    }
+   625→   625→  }
+   626→   626→  io.emit('alerts:list', alertEvents.slice(0, 30))
+   627→   627→}
+   628→   628→
+   629→   629→// ============================================================
+   630→   630→// AUTO-TRADE RULES (pre-news flatten, max daily loss, etc)
+   631→   631→// ============================================================
+   632→   632→function evaluateAutoTradeRules() {
+   633→   633→  for (const rule of autoTradeRules) {
+   634→   634→    if (!rule.enabled) continue
+   635→   635→    if (rule.type === 'max_daily_loss') {
+   636→   636→      const today = new Date().toISOString().slice(0, 10)
+   637→   637→      if (sessionStartBalance.date !== today) {
+   638→   638→        sessionStartBalance.date = today
+   639→   639→        sessionStartBalance.balance = mt5.balance
+   640→   640→      }
+   641→   641→      const dayPnl = mt5.balance - sessionStartBalance.balance
+   642→   642→      const dayPnlPct = (dayPnl / sessionStartBalance.balance) * 100
+   643→   643→      if (dayPnlPct <= -3) {
+   644→   644→        // flatten all
+   645→   645→        flattenAll('max_daily_loss')
+   646→   646→        rule.enabled = false  // disable setelah trigger
+   647→   647→      }
+   648→   648→    } else if (rule.type === 'pre_news_flatten') {
+   649→   649→      // cek apakah ada berita high impact dalam X menit
+   650→   650→      const minutesBefore = rule.minutesBefore ?? 2
+   651→   651→      const nowMs = Date.now()
+   652→   652→      for (const n of NEWS) {
+   653→   653→        if (n.impact !== (rule.impactFilter ?? 'high')) continue
+   654→   654→        if (rule.countryFilter && n.country !== rule.countryFilter) continue
+   655→   655→        const timeToNews = new Date(n.eventTime).getTime() - nowMs
+   656→   656→        if (timeToNews > 0 && timeToNews < minutesBefore * 60 * 1000) {
+   657→   657→          flattenAll('pre_news_flatten')
+   658→   658→          logEvent('warn', 'strategy', `Auto-flatten pre-news: ${n.title} in ${Math.round(timeToNews / 60000)}min`)
+   659→   659→          break
+   660→   660→        }
+   661→   661→      }
+   662→   662→    }
+   663→   663→  }
+   664→   664→}
+   665→   665→
+   666→   666→function flattenAll(reason: string): number {
+   667→   667→  let closed = 0
+   668→   668→  for (const ticket of Array.from(positions.keys())) {
+   669→   669→    closePosition(ticket, reason as any)
+   670→   670→    closed++
+   671→   671→  }
+   672→   672→  if (closed > 0) logEvent('warn', 'strategy', `FLATTEN ALL (${reason}): ${closed} positions closed`)
+   673→   673→  return closed
+   674→   674→}
+   675→   675→
+   676→   676→// ============================================================
+   677→   677→// NEWS
+   678→   678→// ============================================================
+   679→   679→interface NewsEvent {
+   680→   680→  id: string
+   681→   681→  title: string
+   682→   682→  country: string
+   683→   683→  currency: string
+   684→   684→  impact: 'high' | 'medium' | 'low'
+   685→   685→  eventTime: string
+   686→   686→  previous?: number
+   687→   687→  forecast?: number
+   688→   688→  actual?: number
+   689→   689→  source: string
+   690→   690→}
+   691→   691→const NEWS: NewsEvent[] = [
+   692→   692→  { id: 'n1', title: 'CPI m/m (US)', country: 'US', currency: 'USD', impact: 'high', eventTime: new Date(Date.now() + 3600 * 1000).toISOString(), previous: 2.4, forecast: 2.4, source: 'tiingo' },
+   693→   693→  { id: 'n2', title: 'Non-Farm Payroll', country: 'US', currency: 'USD', impact: 'high', eventTime: new Date(Date.now() + 7200 * 1000).toISOString(), previous: 227, forecast: 200, source: 'tiingo' },
+   694→   694→  { id: 'n3', title: 'Unemployment Rate', country: 'US', currency: 'USD', impact: 'high', eventTime: new Date(Date.now() + 14400 * 1000).toISOString(), previous: 4.1, forecast: 4.1, source: 'tiingo' },
+   695→   695→  { id: 'n4', title: 'GDP q/q', country: 'US', currency: 'USD', impact: 'high', eventTime: new Date(Date.now() + 21600 * 1000).toISOString(), previous: 3.0, forecast: 2.8, source: 'tiingo' },
+   696→   696→]
+   697→   697→
+   698→   698→function analyzeNews(ev: NewsEvent) {
+   699→   699→  if (ev.actual === undefined || ev.forecast === undefined) return { ready: false, deviation: null, directionUsd: 'neutral' }
+   700→   700→  const deviation = ev.forecast !== 0 ? +(((ev.actual - ev.forecast) / Math.abs(ev.forecast)) * 100).toFixed(2) : 0
+   701→   701→  const actualGreater = ev.actual > ev.forecast
+   702→   702→  const title = ev.title.toLowerCase()
+   703→   703→  let directionUsd: 'up' | 'down' | 'neutral' = 'neutral'
+   704→   704→  if (title.includes('unemployment')) directionUsd = actualGreater ? 'down' : 'up'
+   705→   705→  else directionUsd = actualGreater ? 'up' : 'down'
+   706→   706→  const invert = (d: string) => (d === 'up' ? 'down' : d === 'down' ? 'up' : 'neutral')
+   707→   707→  return {
+   708→   708→    ready: true,
+   709→   709→    deviation,
+   710→   710→    directionUsd,
+   711→   711→    directionXau: invert(directionUsd),
+   712→   712→    directionEur: invert(directionUsd),
+   713→   713→    directionGbp: invert(directionUsd),
+   714→   714→    directionJpy: directionUsd,
+   715→   715→  }
+   716→   716→}
+   717→   717→
+   718→   718→// ============================================================
+   719→   719→// IO HANDLERS
+   720→   720→// ============================================================
+   721→   721→io.on('connection', (socket) => {
+   722→   722→  logEvent('debug', 'ws', `Client connected: ${socket.id}`)
+   723→   723→
+   724→   724→  // Wrap emit in try-catch to prevent handler crash
+   725→   725→  const safeEmit = (event: string, data: any) => {
+   726→   726→    try { socket.emit(event, data) } catch (e) { console.error(`[emit:${event}]`, e) }
+   727→   727→  }
+   728→   728→
+   729→   729→  try { safeEmit('mt5:status', mt5) } catch (e) { console.error(e) }
+   730→   730→  try { safeEmit('symbols:snapshot', Object.values(SYMBOLS)) } catch (e) { console.error(e) }
+   731→   731→  try { safeEmit('news:snapshot', NEWS) } catch (e) { console.error(e) }
+   732→   732→  try { safeEmit('positions:update', Array.from(positions.values())) } catch (e) { console.error(e) }
+   733→   733→  try { safeEmit('pending:orders:update', Array.from(pendingOrders.values())) } catch (e) { console.error(e) }
+   734→   734→  try { safeEmit('accounts:list', accounts) } catch (e) { console.error(e) }
+   735→   735→  try { safeEmit('alerts:rules', alertRules) } catch (e) { console.error(e) }
+   736→   736→  try { safeEmit('alerts:list', alertEvents.slice(0, 30)) } catch (e) { console.error(e) }
+   737→   737→  try { safeEmit('autotrade:rules', autoTradeRules) } catch (e) { console.error(e) }
+   738→   738→  try { safeEmit('drawings:list', drawings) } catch (e) { console.error(e) }
+   739→   739→  try { safeEmit('copytrade:list', copyTradeSubs) } catch (e) { console.error(e) }
+   740→   740→  try { safeEmit('history:trades', tradeHistory.slice(0, 50)) } catch (e) { console.error(e) }
+   741→   741→
+   742→   742→  // MT5
+   743→   743→  socket.on('mt5:launch', async (payload: any) => {
+   744→   744→    const r = await launchMt5(payload?.path, payload?.login, payload?.server)
+   745→   745→    socket.emit('mt5:launch:result', r)
+   746→   746→  })
+   747→   747→  socket.on('mt5:disconnect', () => disconnectMt5())
+   748→   748→
+   749→   749→  // Trade
+   750→   750→  socket.on('trade:open', (p: any) => socket.emit('trade:open:result', openMarket(p.symbol, p.side, p.lots, p)))
+   751→   751→  socket.on('trade:close', (p: { ticket: number }) => socket.emit('trade:close:result', closePosition(p.ticket)))
+   752→   752→  socket.on('trade:modify', (p: any) => socket.emit('trade:modify:result', modifyPosition(p.ticket, p.sl, p.tp, p.trailingStopPips)))
+   753→   753→  socket.on('trade:partial', (p: { ticket: number; fraction: number }) => socket.emit('trade:partial:result', partialClose(p.ticket, p.fraction)))
+   754→   754→  socket.on('trade:flatten', () => socket.emit('trade:flatten:result', { closed: flattenAll('manual') }))
+   755→   755→  socket.on('trade:reverse', (p: { ticket: number }) => {
+   756→   756→    const pos = positions.get(p.ticket)
+   757→   757→    if (pos) {
+   758→   758→      closePosition(p.ticket, 'manual')
+   759→   759→      openMarket(pos.symbol, pos.side === 'BUY' ? 'SELL' : 'BUY', pos.lots, { isAuto: false })
+   760→   760→      socket.emit('trade:reverse:result', { ok: true })
+   761→   761→    }
+   762→   762→  })
+   763→   763→
+   764→   764→  // Pending orders
+   765→   765→  socket.on('pending:place', (p: any) => socket.emit('pending:place:result', placePendingOrder(p)))
+   766→   766→  socket.on('pending:cancel', (p: { ticket: number }) => socket.emit('pending:cancel:result', cancelPendingOrder(p.ticket)))
+   767→   767→
+   768→   768→  // News
+   769→   769→  socket.on('news:analyze', ({ id }: { id: string }) => {
+   770→   770→    const ev = NEWS.find((n) => n.id === id)
+   771→   771→    if (!ev) return socket.emit('news:analyze:result', { ok: false, msg: 'Not found' })
+   772→   772→    if (ev.actual === undefined && ev.forecast !== undefined) {
+   773→   773→      ev.actual = +(ev.forecast + (Math.random() - 0.5) * 0.6).toFixed(2)
+   774→   774→    }
+   775→   775→    socket.emit('news:analyze:result', { ok: true, event: ev, analysis: analyzeNews(ev) })
+   776→   776→    io.emit('news:update', ev)
+   777→   777→  })
+   778→   778→  socket.on('news:add', (ev: NewsEvent) => {
+   779→   779→    ev.id = ev.id || 'manual_' + Math.random().toString(36).slice(2)
+   780→   780→    ev.source = 'manual'
+   781→   781→    NEWS.unshift(ev)
+   782→   782→    io.emit('news:update', ev)
+   783→   783→  })
+   784→   784→
+   785→   785→  // Alerts
+   786→   786→  socket.on('alerts:rules:set', (rules: AlertRule[]) => {
+   787→   787→    alertRules.length = 0
+   788→   788→    alertRules.push(...rules)
+   789→   789→    io.emit('alerts:rules', alertRules)
+   790→   790→  })
+   791→   791→  socket.on('alert:ack', ({ id }: { id: string }) => {
+   792→   792→    const ev = alertEvents.find((e) => e.id === id)
+   793→   793→    if (ev) ev.acknowledged = true
+   794→   794→    io.emit('alerts:list', alertEvents.slice(0, 30))
+   795→   795→  })
+   796→   796→  socket.on('alert:add', (rule: AlertRule) => {
+   797→   797→    rule.id = rule.id || 'rule_' + Math.random().toString(36).slice(2)
+   798→   798→    alertRules.push(rule)
+   799→   799→    io.emit('alerts:rules', alertRules)
+   800→   800→  })
+   801→   801→  socket.on('alert:delete', ({ id }: { id: string }) => {
+   802→   802→    const idx = alertRules.findIndex((r) => r.id === id)
+   803→   803→    if (idx >= 0) alertRules.splice(idx, 1)
+   804→   804→    io.emit('alerts:rules', alertRules)
+   805→   805→  })
+   806→   806→
+   807→   807→  // Auto-trade rules
+   808→   808→  socket.on('autotrade:rules:set', (rules: AutoTradeRule[]) => {
+   809→   809→    autoTradeRules.length = 0
+   810→   810→    autoTradeRules.push(...rules)
+   811→   811→    io.emit('autotrade:rules', autoTradeRules)
+   812→   812→  })
+   813→   813→
+   814→   814→  // Accounts
+   815→   815→  socket.on('accounts:switch', ({ id }: { id: string }) => {
+   816→   816→    const acc = accounts.find((a) => a.id === id)
+   817→   817→    if (!acc) return
+   818→   818→    // disconnect, switch, reconnect (simulasi)
+   819→   819→    mt5.login = acc.login
+   820→   820→    mt5.server = acc.server
+   821→   821→    logEvent('info', 'mt5', `Switched to ${acc.label}`, { login: acc.login, server: acc.server })
+   822→   822→    io.emit('mt5:status', mt5)
+   823→   823→  })
+   824→   824→  socket.on('accounts:add', (acc: AccountConfig) => {
+   825→   825→    acc.id = acc.id || 'acc_' + Math.random().toString(36).slice(2)
+   826→   826→    accounts.push(acc)
+   827→   827→    io.emit('accounts:list', accounts)
+   828→   828→  })
+   829→   829→  socket.on('accounts:delete', ({ id }: { id: string }) => {
+   830→   830→    const idx = accounts.findIndex((a) => a.id === id)
+   831→   831→    if (idx >= 0) accounts.splice(idx, 1)
+   832→   832→    io.emit('accounts:list', accounts)
+   833→   833→  })
+   834→   834→
+   835→   835→  // Drawings
+   836→   836→  socket.on('drawing:add', (d: DrawingObject) => {
+   837→   837→    d.id = d.id || 'draw_' + Math.random().toString(36).slice(2)
+   838→   838→    d.createdAt = new Date().toISOString()
+   839→   839→    drawings.push(d)
+   840→   840→    io.emit('drawings:list', drawings)
+   841→   841→  })
+   842→   842→  socket.on('drawing:update', (d: DrawingObject) => {
+   843→   843→    const idx = drawings.findIndex((x) => x.id === d.id)
+   844→   844→    if (idx >= 0) drawings[idx] = d
+   845→   845→    io.emit('drawings:list', drawings)
+   846→   846→  })
+   847→   847→  socket.on('drawing:delete', ({ id }: { id: string }) => {
+   848→   848→    const idx = drawings.findIndex((x) => x.id === id)
+   849→   849→    if (idx >= 0) drawings.splice(idx, 1)
+   850→   850→    io.emit('drawings:list', drawings)
+   851→   851→  })
+   852→   852→  socket.on('drawing:clear', ({ symbol }: { symbol?: string }) => {
+   853→   853→    if (symbol) {
+   854→   854→      for (let i = drawings.length - 1; i >= 0; i--) if (drawings[i].symbol === symbol) drawings.splice(i, 1)
+   855→   855→    } else drawings.length = 0
+   856→   856→    io.emit('drawings:list', drawings)
+   857→   857→  })
+   858→   858→
+   859→   859→  // Copy trade
+   860→   860→  socket.on('copytrade:add', (sub: CopyTradeSub) => {
+   861→   861→    sub.id = sub.id || 'sub_' + Math.random().toString(36).slice(2)
+   862→   862→    copyTradeSubs.push(sub)
+   863→   863→    io.emit('copytrade:list', copyTradeSubs)
+   864→   864→  })
+   865→   865→  socket.on('copytrade:delete', ({ id }: { id: string }) => {
+   866→   866→    const idx = copyTradeSubs.findIndex((x) => x.id === id)
+   867→   867→    if (idx >= 0) copyTradeSubs.splice(idx, 1)
+   868→   868→    io.emit('copytrade:list', copyTradeSubs)
+   869→   869→  })
+   870→   870→
+   871→   871→  // History
+   872→   872→  socket.on('history:trades:get', ({ limit }: { limit?: number }) => {
+   873→   873→    socket.emit('history:trades', tradeHistory.slice(0, limit ?? 50))
+   874→   874→  })
+   875→   875→
+   876→   876→  // Journal
+   877→   877→  socket.on('journal:add', (entry: any) => {
+   878→   878→    entry.id = entry.id || 'je_' + Math.random().toString(36).slice(2)
+   879→   879→    io.emit('journal:new', entry)
+   880→   880→  })
+   881→   881→
+   882→   882→  // Backtest (sederhana: gunakan tick history yang sudah ada)
+   883→   883→  socket.on('backtest:run', (cfg: any) => {
+   884→   884→    const symbol = cfg.symbol
+   885→   885→    const history = TICK_HISTORY[symbol] ?? []
+   886→   886→    if (history.length < 50) {
+   887→   887→      return socket.emit('backtest:result', { ok: false, msg: 'History tidak cukup (min 50 ticks)' })
+   888→   888→    }
+   889→   889→    // Simple strategy: BUY when price > SMA(20), SELL when < SMA(20)
+   890→   890→    let balance = cfg.initialBalance ?? 10000
+   891→   891→    let position: any = null
+   892→   892→    const trades: any[] = []
+   893→   893→    const smaPeriod = cfg.smaPeriod ?? 20
+   894→   894→    for (let i = smaPeriod; i < history.length; i++) {
+   895→   895→      const slice = history.slice(i - smaPeriod, i)
+   896→   896→      const sma = slice.reduce((a, t) => a + t.bid, 0) / slice.length
+   897→   897→      const cur = history[i]
+   898→   898→      if (!position && cur.bid > sma) {
+   899→   899→        position = { side: 'BUY', entry: cur.bid, time: cur.time, lots: cfg.lots ?? 0.1 }
+   900→   900→      } else if (position && position.side === 'BUY' && cur.bid < sma) {
+   901→   901→        const profit = (cur.bid - position.entry) * position.lots * (SYMBOLS[symbol]?.contractSize ?? 100000)
+   902→   902→        balance += profit
+   903→   903→        trades.push({ ...position, exit: cur.bid, exitTime: cur.time, profit, pnlPips: (cur.bid - position.entry) / (SYMBOLS[symbol]?.pipSize ?? 0.0001) })
+   904→   904→        position = null
+   905→   905→      } else if (!position && cur.bid < sma) {
+   906→   906→        position = { side: 'SELL', entry: cur.bid, time: cur.time, lots: cfg.lots ?? 0.1 }
+   907→   907→      } else if (position && position.side === 'SELL' && cur.bid > sma) {
+   908→   908→        const profit = (position.entry - cur.bid) * position.lots * (SYMBOLS[symbol]?.contractSize ?? 100000)
+   909→   909→        balance += profit
+   910→   910→        trades.push({ ...position, exit: cur.bid, exitTime: cur.time, profit, pnlPips: (position.entry - cur.bid) / (SYMBOLS[symbol]?.pipSize ?? 0.0001) })
+   911→   911→        position = null
+   912→   912→      }
+   913→   913→    }
+   914→   914→    const wins = trades.filter((t) => t.profit > 0).length
+   915→   915→    const losses = trades.filter((t) => t.profit <= 0).length
+   916→   916→    const grossProfit = trades.filter((t) => t.profit > 0).reduce((a, t) => a + t.profit, 0)
+   917→   917→    const grossLoss = Math.abs(trades.filter((t) => t.profit <= 0).reduce((a, t) => a + t.profit, 0))
+   918→   918→    const winRate = trades.length > 0 ? (wins / trades.length) * 100 : 0
+   919→   919→    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : 0
+   920→   920→    // Max drawdown
+   921→   921→    let peak = balance, maxDD = 0
+   922→   922→    let runningBal = cfg.initialBalance ?? 10000
+   923→   923→    for (const t of trades) {
+   924→   924→      runningBal += t.profit
+   925→   925→      peak = Math.max(peak, runningBal)
+   926→   926→      maxDD = Math.max(maxDD, ((peak - runningBal) / peak) * 100)
+   927→   927→    }
+   928→   928→    socket.emit('backtest:result', {
+   929→   929→      ok: true,
+   930→   930→      totalTrades: trades.length,
+   931→   931→      wins,
+   932→   932→      losses,
+   933→   933→      winRate: +winRate.toFixed(2),
+   934→   934→      profitFactor: +profitFactor.toFixed(2),
+   935→   935→      maxDrawdown: +maxDD.toFixed(2),
+   936→   936→      finalBalance: +balance.toFixed(2),
+   937→   937→      trades: trades.slice(-100),
+   938→   938→    })
+   939→   939→    logEvent('info', 'backtest', `Backtest ${symbol}: ${trades.length} trades, win rate ${winRate.toFixed(1)}%`, { balance })
+   940→   940→  })
+   941→   941→
+   942→   942→  // Socket-level error handler
+   943→   943→  socket.on('error', (err: any) => {
+   944→   944→    console.error(`[socket ${socket.id}] error:`, err?.message ?? err)
+   945→   945→  })
+   946→   946→})
+   947→   947→
+   948→   948→httpServer.listen(PORT, () => {
+   949→   949→  console.log(`MT5 Bridge WebSocket v2 running on port ${PORT} (all interfaces)`)
+   950→   950→  logEvent('info', 'mt5', 'MT5 Bridge v2 service started', { port: PORT, features: 20 })
+   951→   951→})
+   952→   952→
+   953→   953→// ============================================================
+   954→   954→// KEEP-ALIVE & SHUTDOWN
+   955→   955→// ============================================================
+   956→   956→process.on('SIGHUP', () => console.log('[INFO] Received SIGHUP - ignoring'))
+   957→   957→process.on('SIGTERM', () => { httpServer.close(() => process.exit(0)) })
+   958→   958→process.on('SIGINT', () => { httpServer.close(() => process.exit(0)) })
+   959→   959→process.on('uncaughtException', (err) => console.error('[FATAL]', err.message, err.stack))
+   960→   960→process.on('unhandledRejection', (err) => console.error('[FATAL]', err))
+   961→   961→
+   962→   962→setInterval(() => { /* noop heartbeat */ }, 60000)
+   963→   963→

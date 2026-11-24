@@ -26,6 +26,8 @@ export function AlertsCenter() {
 
   const toggleRule = (id: string) => {
     const updated = rules.map((r) => r.id === id ? { ...r, enabled: !r.enabled } : r)
+    // Optimistic local update
+    useExtMarketStore.getState().setAlertRules(updated)
     setAlertRules(updated)
   }
 
@@ -75,7 +77,7 @@ export function AlertsCenter() {
                       <div className="text-[10px] text-muted-foreground">{new Date(a.timestamp).toLocaleString('id-ID')}</div>
                     </div>
                     {!a.acknowledged ? (
-                      <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => ackAlert(a.id)}>
+                      <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => { useExtMarketStore.getState().ackAlert(a.id); ackAlert(a.id) }}>
                         <Check className="size-3" /> Ack
                       </Button>
                     ) : (

@@ -90,12 +90,11 @@ export function ModelSelectorLocal({ type, endpoint, model, customModel, useCust
   const pullModel = async (modelId: string) => {
     setPullBusy(modelId)
     try {
-      // Use Ollama endpoint for pull
-      const baseEp = endpoint.replace(/\/api\/generate$/, '').replace(/\/$/, '')
+      // Kirim endpoint apa adanya — route akan transformasi regex ke /api/pull
       const res = await fetch('/api/ai/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'pull_ollama', endpoint: baseEp, model: modelId }),
+        body: JSON.stringify({ action: 'pull_ollama', endpoint, model: modelId }),
       })
       const data = await res.json()
       if (data.ok) {

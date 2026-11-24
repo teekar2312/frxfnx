@@ -57,7 +57,10 @@ export function NewsCalendarView() {
   // Tiingo fetch handler (mock - in production panggil /api/news/tiingo)
   const handleTiingoFetch = async () => {
     try {
-      const res = await fetch('/api/news/tiingo')
+      // Kirim apiKey dari settings + fallback ke vault
+      const apiKey = settings.tiingoApiKey ?? ''
+      const url = `/api/news/tiingo${apiKey ? `?apiKey=${encodeURIComponent(apiKey)}` : ''}`
+      const res = await fetch(url)
       const data = await res.json()
       if (data?.events?.length) {
         for (const ev of data.events) upsertNews(ev)

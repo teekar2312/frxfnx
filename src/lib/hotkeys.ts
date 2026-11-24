@@ -7,7 +7,6 @@ import { useEffect } from 'react'
 import { useUIStore } from '@/store/ui'
 import { useMarketStore } from '@/store/market'
 import { useMt5Socket } from '@/lib/mt5/socket'
-import { useAccountStore } from '@/store/account'
 import { toast } from 'sonner'
 
 export interface HotkeyHandler {

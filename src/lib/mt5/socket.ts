@@ -38,6 +38,10 @@ function ensureSocket(): Socket | null {
 
   // Existing events
   socket.on('mt5:status', (s: Mt5Status) => useMarketStore.getState().setMt5(s))
+  socket.on('symbols:snapshot', (symbols: any[]) => {
+    // Simpan metadata symbol (digits, pipSize, contractSize, maxSpreadPips) ke market store
+    useMarketStore.getState().setSymbolsMeta(symbols)
+  })
   socket.on('price:tick', (data: { ts: number; prices: SymbolPrice[] }) => {
     for (const p of data.prices) useMarketStore.getState().setPrice(p)
   })
@@ -49,14 +53,16 @@ function ensureSocket(): Socket | null {
   // New events
   socket.on('pending:orders:update', (p: PendingOrder[]) => useExtMarketStore.getState().setPendingOrders(p))
   socket.on('pending:filled', ({ pendingTicket, positionTicket }: { pendingTicket: number; positionTicket: number }) => {
-    // logEvent is implicit; just update state
+    // Hapus pending order yang sudah filled dari list (positions akan datang via positions:update)
+    const cur = useExtMarketStore.getState().pendingOrders
+    useExtMarketStore.getState().setPendingOrders(cur.filter((p) => p.ticket !== pendingTicket))
   })
   socket.on('history:trades', (t: TradeHistory[]) => useExtMarketStore.getState().setTradeHistory(t))
   socket.on('alerts:rules', (a: AlertRule[]) => useExtMarketStore.getState().setAlertRules(a))
   socket.on('alerts:list', (e: AlertEvent[]) => useExtMarketStore.getState().setAlertEvents(e))
   socket.on('alert:event', (e: AlertEvent) => {
-    const cur = useExtMarketStore.getState().alertEvents
-    useExtMarketStore.getState().setAlertEvents([e, ...cur].slice(0, 30))
+    // Functional update untuk hindari race condition jika 2 event datang bersamaan
+    useExtMarketStore.setState((s) => ({ alertEvents: [e, ...s.alertEvents].slice(0, 30) }))
   })
   socket.on('autotrade:rules', (r: AutoTradeRule[]) => useExtMarketStore.getState().setAutoTradeRules(r))
   socket.on('accounts:list', (a: AccountConfig[]) => useExtMarketStore.getState().setAccounts(a))
@@ -81,8 +87,24 @@ export function useMt5Socket() {
     launchMt5: (payload?: { path?: string; login?: string; password?: string; server?: string }) =>
       new Promise((resolve) => {
         const s = ensureSocket()
-        s?.emit('mt5:launch', payload ?? {}, (r: any) => resolve(r))
-        setTimeout(() => resolve({ ok: true, msg: 'launching' }), 8000)
+        if (!s) return resolve({ ok: false, msg: 'socket not ready' })
+        // Backend emit 'mt5:launch:result' as separate event (not ack callback)
+        let resolved = false
+        const handler = (r: any) => {
+          if (resolved) return
+          resolved = true
+          s.off('mt5:launch:result', handler)
+          resolve(r)
+        }
+        s.on('mt5:launch:result', handler)
+        s.emit('mt5:launch', payload ?? {})
+        // Fallback timeout 8s untuk launch yang memakan waktu lama
+        setTimeout(() => {
+          if (resolved) return
+          resolved = true
+          s.off('mt5:launch:result', handler)
+          resolve({ ok: true, msg: 'launching (timeout fallback)' })
+        }, 8000)
       }),
     disconnectMt5: () => ensureSocket()?.emit('mt5:disconnect'),
     openTrade: (p: { symbol: string; side: 'BUY' | 'SELL'; lots: number; sl?: number; tp?: number; isAuto?: boolean; strategyId?: string; trailingStopPips?: number; originalLots?: number }) =>

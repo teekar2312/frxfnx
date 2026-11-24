@@ -84,8 +84,9 @@ Sesuai aturan 3 Angka Emas & strategi 15-Min Breakout:
     } else {
       // Local AI (Ollama / LM Studio / vLLM / llama.cpp)
       const localType = body.localType || 'ollama'
-      let endpoint = body.endpoint || 'http://127.0.0.1:11434/api/generate'
-      let localModel = body.localModel || 'llama3.1:8b'
+      let endpoint = body.endpoint || body.localEndpoint || 'http://127.0.0.1:11434/api/generate'
+      // Support both `model` (preferred, consistent with groq path) and `localModel` (legacy)
+      let localModel = body.model || body.localModel || 'llama3.1:8b'
       // Handle custom model
       if (typeof localModel === 'string' && localModel.startsWith('__custom__')) {
         localModel = localModel.replace('__custom__', '') || 'llama3.1:8b'

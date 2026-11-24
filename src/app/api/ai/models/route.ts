@@ -158,7 +158,23 @@ export async function POST(req: NextRequest) {
   const body = await req.json()
   const { action, endpoint, model } = body
   if (action === 'pull_ollama') {
-    const pullUrl = endpoint.replace(/\/api\/generate$/, '/api/pull').replace(/\/$/, '/api/pull')
+    // Handle berbagai format endpoint: 
+    // - http://x:11434 → http://x:11434/api/pull
+    // - http://x:11434/api/generate → http://x:11434/api/pull
+    // - http://x:11434/ → http://x:11434/api/pull
+    let pullUrl = endpoint
+    if (pullUrl.endsWith('/api/generate')) {
+      pullUrl = pullUrl.replace(/\/api\/generate$/, '/api/pull')
+    } else if (pullUrl.endsWith('/api/tags')) {
+      pullUrl = pullUrl.replace(/\/api\/tags$/, '/api/pull')
+    } else if (pullUrl.endsWith('/api/pull')) {
+      // sudah benar
+    } else if (pullUrl.endsWith('/')) {
+      pullUrl = pullUrl + 'api/pull'
+    } else {
+      // asumsi root endpoint
+      pullUrl = pullUrl.replace(/\/$/, '') + '/api/pull'
+    }
     try {
       // Pull adalah long-running. Return immediately; user jalankan via Ollama CLI.
       const res = await fetch(pullUrl, {
@@ -168,7 +184,7 @@ export async function POST(req: NextRequest) {
         signal: AbortSignal.timeout(10000),
       })
       if (!res.ok) {
-        return NextResponse.json({ ok: false, msg: `Pull failed: ${res.status}` })
+        return NextResponse.json({ ok: false, msg: `Pull failed: ${res.status}. Jalankan manual: ollama pull ${model}` })
       }
       return NextResponse.json({ ok: true, msg: `Pull ${model} selesai` })
     } catch (e: any) {

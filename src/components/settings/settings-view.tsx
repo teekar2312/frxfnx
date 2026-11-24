@@ -353,6 +353,8 @@ function AutoTradeTab() {
   const update = (id: string, field: keyof typeof localRules[0], value: any) => {
     const updated = localRules.map((r) => r.id === id ? { ...r, [field]: value } : r)
     setLocalRules(updated)
+    // Optimistic: update global store juga (bukan hanya socket) agar UI lain yang subscribe juga update
+    useExtMarketStore.getState().setAutoTradeRules(updated)
     setAutoTradeRules(updated)
   }
 
