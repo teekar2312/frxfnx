@@ -49,6 +49,11 @@ export function AiAssistantView() {
         body: JSON.stringify({
           provider: settings.aiProvider,
           prompt,
+          // Pass model + endpoint + apiKey based on provider
+          model: settings.aiProvider === 'groq' ? settings.groqModel : settings.localAiModel,
+          apiKey: settings.aiProvider === 'groq' ? settings.groqApiKey : undefined,
+          endpoint: settings.aiProvider === 'local' ? settings.localAiEndpoint : undefined,
+          localType: settings.aiProvider === 'local' ? settings.localAiType : undefined,
           context: {
             broker: settings.brokerName,
             equity: mt5.equity,
@@ -202,13 +207,17 @@ export function AiAssistantView() {
               {settings.aiProvider === 'groq' ? (
                 <div>
                   <div className="font-semibold text-orange-500">Groq AI</div>
-                  <div className="text-muted-foreground">Model: {settings.groqModel ?? 'llama-3.3-70b-versatile'}</div>
+                  <div className="text-muted-foreground">
+                    Model: {((settings.groqModel ?? '').startsWith('__custom__') ? (settings.groqCustomModel ?? '') : settings.groqModel) || 'llama-3.3-70b-versatile'}
+                  </div>
                   <div className="text-muted-foreground">API Key: {settings.groqApiKey ? '✓ set' : '⚠ belum diisi (Settings)'}</div>
                 </div>
               ) : (
                 <div>
-                  <div className="font-semibold text-sky-500">Local AI</div>
-                  <div className="text-muted-foreground">Model: {settings.localAiModel ?? 'llama3.1:8b'}</div>
+                  <div className="font-semibold text-sky-500">Local AI · {settings.localAiType ?? 'ollama'}</div>
+                  <div className="text-muted-foreground">
+                    Model: {((settings.localAiModel ?? '').startsWith('__custom__') ? (settings.localAiCustomModel ?? '') : settings.localAiModel) || 'llama3.1:8b'}
+                  </div>
                   <div className="text-muted-foreground">Endpoint: {settings.localAiEndpoint}</div>
                 </div>
               )}

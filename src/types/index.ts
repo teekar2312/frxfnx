@@ -6,6 +6,7 @@ export type TradingSide = 'BUY' | 'SELL'
 export type OrderType = 'MARKET' | 'BUY_STOP' | 'SELL_STOP' | 'BUY_LIMIT' | 'SELL_LIMIT'
 export type Impact = 'high' | 'medium' | 'low'
 export type AiProvider = 'groq' | 'local'
+export type LocalAiType = 'ollama' | 'lmstudio' | 'vllm' | 'llamacpp' | 'custom'
 
 export interface SymbolPrice {
   symbol: string
@@ -138,8 +139,11 @@ export interface AppSettings {
   tiingoApiKey: string
   groqApiKey: string
   groqModel: string
+  groqCustomModel: string  // untuk custom model di luar list preset
+  localAiType: LocalAiType  // ollama | lmstudio | vllm | llamacpp | custom
   localAiEndpoint: string
   localAiModel: string
+  localAiCustomModel: string  // untuk custom model di luar list
   aiProvider: AiProvider
   riskPerTradePct: number
   dailyStopPct: number

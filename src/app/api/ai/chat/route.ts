@@ -38,6 +38,11 @@ Jawab dalam Bahasa Indonesia, ringkas, dengan rekomendasi konkret (pair, arah, l
 
     if (provider === 'groq') {
       const apiKey = process.env.GROQ_API_KEY || body.apiKey || body.groqApiKey
+      // Handle custom model yang diset sebagai '__custom__<model_id>'
+      let modelId = body.model || 'llama-3.3-70b-versatile'
+      if (typeof modelId === 'string' && modelId.startsWith('__custom__')) {
+        modelId = modelId.replace('__custom__', '') || 'llama-3.3-70b-versatile'
+      }
       if (!apiKey) {
         // fallback: kembalikan response stub yang menjelaskan
         content = `(Groq API key belum di-set. Atur di Settings > AI Providers. Mock response untuk demo.)
@@ -58,7 +63,7 @@ Sesuai aturan 3 Angka Emas & strategi 15-Min Breakout:
             Authorization: `Bearer ${apiKey}`,
           },
           body: JSON.stringify({
-            model: body.model || 'llama-3.3-70b-versatile',
+            model: modelId,
             messages: [
               { role: 'system', content: sys },
               { role: 'user', content: prompt },
@@ -77,23 +82,61 @@ Sesuai aturan 3 Angka Emas & strategi 15-Min Breakout:
         tokens = data.usage?.total_tokens ?? 0
       }
     } else {
-      // Local AI (Ollama)
-      const endpoint = body.endpoint || 'http://127.0.0.1:11434/api/generate'
-      const localModel = body.localModel || 'llama3.1:8b'
+      // Local AI (Ollama / LM Studio / vLLM / llama.cpp)
+      const localType = body.localType || 'ollama'
+      let endpoint = body.endpoint || 'http://127.0.0.1:11434/api/generate'
+      let localModel = body.localModel || 'llama3.1:8b'
+      // Handle custom model
+      if (typeof localModel === 'string' && localModel.startsWith('__custom__')) {
+        localModel = localModel.replace('__custom__', '') || 'llama3.1:8b'
+      }
       try {
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: localModel,
-            prompt: `${sys}\n\nUser: ${prompt}\nAssistant:`,
-            stream: false,
-            options: { temperature: 0.4, num_predict: 600 },
-          }),
-        })
+        let res: Response
+        if (localType === 'ollama' || localType === 'custom' || endpoint.includes('/api/generate')) {
+          // Ollama generate API
+          res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: localModel,
+              prompt: `${sys}\n\nUser: ${prompt}\nAssistant:`,
+              stream: false,
+              options: { temperature: 0.4, num_predict: 600 },
+            }),
+            signal: AbortSignal.timeout(30000),
+          })
+        } else if (localType === 'llamacpp' || endpoint.includes('/completion')) {
+          // llama.cpp server
+          res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt: `${sys}\n\nUser: ${prompt}\nAssistant:`,
+              n_predict: 600,
+              temperature: 0.4,
+            }),
+            signal: AbortSignal.timeout(30000),
+          })
+        } else {
+          // LM Studio / vLLM (OpenAI-compatible)
+          res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: localModel,
+              messages: [
+                { role: 'system', content: sys },
+                { role: 'user', content: prompt },
+              ],
+              temperature: 0.4,
+              max_tokens: 600,
+            }),
+            signal: AbortSignal.timeout(30000),
+          })
+        }
         if (!res.ok) {
           const err = await res.text()
-          content = `(Local AI gagal: ${err}). Pastikan Ollama running: 'ollama serve' + 'ollama pull ${localModel}'. Mock response:
+          content = `(Local AI gagal: ${err.slice(0, 200)}). Pastikan ${localType} running di Windows 11. Untuk Ollama: 'ollama serve' + 'ollama pull ${localModel}'. Mock response:
 
 Pertanyaan: "${prompt}"
 
@@ -104,12 +147,13 @@ Rekomendasi umum (strategi 15-Min Breakout):
           model = 'mock'
         } else {
           const data = await res.json()
-          content = data.response ?? ''
+          // Handle 3 response formats
+          content = data.response ?? data.choices?.[0]?.message?.content ?? data.content ?? ''
           model = localModel
-          tokens = (data.eval_count ?? 0)
+          tokens = data.eval_count ?? data.usage?.total_tokens ?? 0
         }
       } catch (e: any) {
-        content = `(Local AI unreachable: ${e?.message}). Jalankan 'ollama serve' dan 'ollama pull ${localModel}' secara lokal di Windows 11.`
+        content = `(Local AI unreachable: ${e?.message ?? e}). Jalankan '${localType === 'ollama' ? 'ollama serve' : localType + ' server'}' dan pull model '${localModel}' di Windows 11.`
         model = 'mock'
       }
     }

@@ -16,7 +16,9 @@ import { useMt5Socket } from '@/lib/mt5/socket'
 import { DEFAULT_HOTKEYS } from '@/lib/hotkeys'
 import { useVault } from '@/lib/vault'
 import { toast } from 'sonner'
-import type { AiProvider } from '@/types'
+import type { AiProvider, LocalAiType } from '@/types'
+import { ModelSelectorGroq } from '@/components/ai/model-selector-groq'
+import { ModelSelectorLocal } from '@/components/ai/model-selector-local'
 
 export function SettingsView() {
   const settings = useUIStore((s) => s.settings)
@@ -118,61 +120,77 @@ export function SettingsView() {
         </TabsContent>
 
         <TabsContent value="ai" className="mt-4">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Groq AI (cloud)</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div>
-                  <Label className="text-xs">Groq API Key</Label>
-                  <Input type="password" value={draft.groqApiKey ?? ''} onChange={(e) => update('groqApiKey', e.target.value)} placeholder="gsk_..." className="h-9 font-mono text-xs" />
-                </div>
-                <div>
-                  <Label className="text-xs">Model</Label>
-                  <Select value={draft.groqModel ?? 'llama-3.3-70b-versatile'} onValueChange={(v) => update('groqModel', v)}>
-                    <SelectTrigger className="h-9 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</SelectItem>
-                      <SelectItem value="llama-3.1-8b-instant">llama-3.1-8b-instant</SelectItem>
-                      <SelectItem value="mixtral-8x7b-32768">mixtral-8x7b-32768</SelectItem>
-                      <SelectItem value="gemma2-9b-it">gemma2-9b-it</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Local AI (Ollama / LM Studio)</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div>
-                  <Label className="text-xs">Endpoint</Label>
-                  <Input value={draft.localAiEndpoint ?? ''} onChange={(e) => update('localAiEndpoint', e.target.value)} className="h-9 font-mono text-xs" placeholder="http://127.0.0.1:11434/api/generate" />
-                </div>
-                <div>
-                  <Label className="text-xs">Model</Label>
-                  <Input value={draft.localAiModel ?? ''} onChange={(e) => update('localAiModel', e.target.value)} className="h-9 font-mono text-xs" placeholder="llama3.1:8b" />
-                </div>
-              </CardContent>
-            </Card>
+          <div className="space-y-4">
+            {/* Active Provider Card */}
             <Card className="md:col-span-2">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Active Provider</CardTitle>
               </CardHeader>
               <CardContent>
                 <Select value={draft.aiProvider ?? 'groq'} onValueChange={(v) => update('aiProvider', v as AiProvider)}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="groq">Groq AI</SelectItem>
-                    <SelectItem value="local">Local AI</SelectItem>
+                    <SelectItem value="groq">Groq AI (cloud, fast, needs API key)</SelectItem>
+                    <SelectItem value="local">Local AI (offline, free, privacy)</SelectItem>
                   </SelectContent>
                 </Select>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  {draft.aiProvider === 'groq'
+                    ? 'Untuk demo tanpa API key, AI Assistant akan berikan respons mock dengan strategi 15-Min Breakout.'
+                    : 'Pastikan Ollama/LM Studio/vLLM running di Windows 11 Anda. Test connection sebelum pakai.'}
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <ModelSelectorGroq
+                apiKey={draft.groqApiKey ?? ''}
+                model={draft.groqModel ?? 'llama-3.3-70b-versatile'}
+                customModel={draft.groqCustomModel ?? ''}
+                useCustom={(draft.groqModel ?? '').startsWith('__custom__')}
+                onChange={(k, v) => update(k as any, v)}
+                onToggleUseCustom={(v) => {
+                  if (v) update('groqModel', '__custom__' + (draft.groqCustomModel ?? ''))
+                  else update('groqModel', 'llama-3.3-70b-versatile')
+                }}
+              />
+              <ModelSelectorLocal
+                type={(draft.localAiType ?? 'ollama') as LocalAiType}
+                endpoint={draft.localAiEndpoint ?? ''}
+                model={draft.localAiModel ?? 'llama3.1:8b'}
+                customModel={draft.localAiCustomModel ?? ''}
+                useCustom={(draft.localAiModel ?? '').startsWith('__custom__')}
+                onChange={(k, v) => update(k as any, v)}
+                onToggleUseCustom={(v) => {
+                  if (v) update('localAiModel', '__custom__' + (draft.localAiCustomModel ?? ''))
+                  else update('localAiModel', 'llama3.1:8b')
+                }}
+              />
+            </div>
+
+            {/* Comparison card */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">Groq vs Local AI — Comparison</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-[10px] uppercase text-muted-foreground">
+                      <th className="text-left py-1">Aspek</th>
+                      <th className="text-left py-1">Groq (cloud)</th>
+                      <th className="text-left py-1">Local (Ollama)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-b"><td className="py-1.5 font-medium">Latency</td><td>~200-500ms (LPU)</td><td>1-10s (CPU/GPU lokal)</td></tr>
+                    <tr className="border-b"><td className="py-1.5 font-medium">Cost</td><td>Free tier besar, pay-as-you-go</td><td>Free (offline)</td></tr>
+                    <tr className="border-b"><td className="py-1.5 font-medium">Privacy</td><td>Data terkirim ke Groq</td><td>100% lokal</td></tr>
+                    <tr className="border-b"><td className="py-1.5 font-medium">Model Quality</td><td>Llama 3.3 70B (terbaik)</td><td>Tergantung model pull (7B-70B)</td></tr>
+                    <tr className="border-b"><td className="py-1.5 font-medium">Setup</td><td>Daftar + API key</td><td>Install Ollama + pull model</td></tr>
+                    <tr className="border-b"><td className="py-1.5 font-medium">Best for</td><td>Real-time analysis, news</td><td>Privacy, offline, custom model</td></tr>
+                  </tbody>
+                </table>
               </CardContent>
             </Card>
           </div>
