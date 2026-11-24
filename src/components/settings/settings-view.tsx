@@ -1,15 +1,20 @@
 'use client'
 
-import { useState } from 'react'
-import { Save, Settings as SettingsIcon } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Save, Settings as SettingsIcon, Trash2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { useUIStore } from '@/store/ui'
+import { useExtMarketStore } from '@/store/extended'
+import { useMt5Socket } from '@/lib/mt5/socket'
+import { DEFAULT_HOTKEYS } from '@/lib/hotkeys'
+import { useVault } from '@/lib/vault'
 import { toast } from 'sonner'
 import type { AiProvider } from '@/types'
 
@@ -38,12 +43,14 @@ export function SettingsView() {
       </div>
 
       <Tabs defaultValue="mt5">
-        <TabsList className="grid w-full grid-cols-2 md:grid-cols-5">
+        <TabsList className="grid w-full grid-cols-3 md:grid-cols-7">
           <TabsTrigger value="mt5" className="text-xs">MT5 / Broker</TabsTrigger>
-          <TabsTrigger value="schedule" className="text-xs">Jadwal Trading</TabsTrigger>
+          <TabsTrigger value="schedule" className="text-xs">Jadwal</TabsTrigger>
           <TabsTrigger value="ai" className="text-xs">AI Providers</TabsTrigger>
           <TabsTrigger value="news" className="text-xs">News API</TabsTrigger>
-          <TabsTrigger value="risk" className="text-xs">Risk Default</TabsTrigger>
+          <TabsTrigger value="risk" className="text-xs">Risk</TabsTrigger>
+          <TabsTrigger value="vault" className="text-xs">API Vault</TabsTrigger>
+          <TabsTrigger value="autotrade" className="text-xs">Auto-Trade</TabsTrigger>
         </TabsList>
 
         <TabsContent value="mt5" className="mt-4">
@@ -226,7 +233,155 @@ export function SettingsView() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="vault" className="mt-4">
+          <ApiVaultTab />
+        </TabsContent>
+
+        <TabsContent value="autotrade" className="mt-4">
+          <AutoTradeTab />
+        </TabsContent>
       </Tabs>
     </div>
+  )
+}
+
+function ApiVaultTab() {
+  const [groq, setGroq] = useState('')
+  const [tiingo, setTiingo] = useState('')
+  const [local, setLocal] = useState('')
+  const { saveKey, getVault, maskKey, deleteKey, saveToKeychain } = useVault()
+
+  const vault = getVault()
+
+  return (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">API Key Vault</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div>
+            <Label className="text-xs">Groq API Key</Label>
+            <div className="flex gap-1">
+              <Input type="password" value={groq} onChange={(e) => setGroq(e.target.value)} placeholder={vault.find((v) => v.provider === 'groq')?.masked ?? 'gsk_...'} className="h-9 text-xs" />
+              <Button size="sm" onClick={() => { saveKey('groq', groq); setGroq(''); toast.success('Groq key saved') }}>Save</Button>
+              <Button size="sm" variant="outline" onClick={async () => { await saveToKeychain('groq', groq); toast.success('Saved to Windows Credential Manager (stub)') }}>Keychain</Button>
+              {vault.find((v) => v.provider === 'groq') && (
+                <Button size="sm" variant="ghost" onClick={() => { deleteKey('groq'); toast.success('Groq key deleted') }}>
+                  <Trash2 className="size-3" />
+                </Button>
+              )}
+            </div>
+          </div>
+          <div>
+            <Label className="text-xs">Tiingo API Key</Label>
+            <div className="flex gap-1">
+              <Input type="password" value={tiingo} onChange={(e) => setTiingo(e.target.value)} placeholder={vault.find((v) => v.provider === 'tiingo')?.masked ?? 'tiingo-...'} className="h-9 text-xs" />
+              <Button size="sm" onClick={() => { saveKey('tiingo', tiingo); setTiingo(''); toast.success('Tiingo key saved') }}>Save</Button>
+              {vault.find((v) => v.provider === 'tiingo') && (
+                <Button size="sm" variant="ghost" onClick={() => { deleteKey('tiingo'); toast.success('Tiingo key deleted') }}>
+                  <Trash2 className="size-3" />
+                </Button>
+              )}
+            </div>
+          </div>
+          <div>
+            <Label className="text-xs">Local AI (Ollama) — no key needed</Label>
+            <Input value={local} onChange={(e) => setLocal(e.target.value)} placeholder="http://127.0.0.1:11434" className="h-9 text-xs" />
+          </div>
+          <div className="rounded-md border bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+            Catatan: untuk produksi di Windows 11, gunakan tombol Keychain untuk simpan di Windows Credential Manager (perlu Python backend dengan keytar).
+            Saat ini keys disimpan di localStorage (terenkripsi seadanya).
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Hot Keys Configuration</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-[10px] uppercase text-muted-foreground">
+                <th className="text-left py-1">Key</th>
+                <th className="text-left py-1">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {DEFAULT_HOTKEYS.map((hk) => (
+                <tr key={hk.key} className="border-b last:border-b-0">
+                  <td className="py-1.5"><kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px]">{hk.key}</kbd></td>
+                  <td className="py-1.5">{hk.label}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="mt-2 text-[10px] text-muted-foreground">Hot keys aktif saat fokus tidak di input/textarea.</div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function AutoTradeTab() {
+  const rules = useExtMarketStore((s) => s.autoTradeRules)
+  const { setAutoTradeRules } = useMt5Socket()
+  const [localRules, setLocalRules] = useState(rules)
+
+  useEffect(() => { setLocalRules(rules) }, [rules])
+
+  const update = (id: string, field: keyof typeof localRules[0], value: any) => {
+    const updated = localRules.map((r) => r.id === id ? { ...r, [field]: value } : r)
+    setLocalRules(updated)
+    setAutoTradeRules(updated)
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Auto-Trade Rules (Pre-News Flatten & Stop Loss)</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {localRules.map((r) => (
+          <div key={r.id} className="rounded-md border p-3 text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Switch checked={r.enabled} onCheckedChange={(v) => update(r.id, 'enabled', v)} />
+                <span className="font-medium">{r.name}</span>
+                <Badge variant="outline" className="text-[10px]">{r.type}</Badge>
+              </div>
+              <span className="text-[10px] text-muted-foreground">{r.flattenAction}</span>
+            </div>
+            {r.type === 'pre_news_flatten' && (
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                <div>
+                  <Label className="text-[10px]">Minutes before</Label>
+                  <Input type="number" min="1" max="60" value={r.minutesBefore ?? 2} onChange={(e) => update(r.id, 'minutesBefore', parseInt(e.target.value))} className="h-7 text-xs tabular-nums" />
+                </div>
+                <div>
+                  <Label className="text-[10px]">Impact</Label>
+                  <Select value={r.impactFilter ?? 'high'} onValueChange={(v) => update(r.id, 'impactFilter', v)}>
+                    <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="high">High</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-[10px]">Country</Label>
+                  <Input value={r.countryFilter ?? 'USD'} onChange={(e) => update(r.id, 'countryFilter', e.target.value)} className="h-7 text-xs" />
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+        <div className="rounded-md border bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+          Saat enabled, sistem otomatis akan <strong>flatten semua posisi</strong> saat kondisi terpenuhi. Pastikan Anda memahami risikonya.
+        </div>
+      </CardContent>
+    </Card>
   )
 }

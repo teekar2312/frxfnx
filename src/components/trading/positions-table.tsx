@@ -10,6 +10,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useMarketStore } from '@/store/market'
 import { useUIStore } from '@/store/ui'
 import { useMt5Socket } from '@/lib/mt5/socket'
+import { TradeTimer } from '@/components/trading/trade-timer'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
@@ -17,7 +18,7 @@ export function PositionsTable() {
   const positions = useMarketStore((s) => s.positions)
   const prices = useMarketStore((s) => s.prices)
   const d = useUIStore((s) => s.density)
-  const { closeTrade, modifyTrade } = useMt5Socket()
+  const { closeTrade, modifyTrade, partialClose } = useMt5Socket()
   const [editing, setEditing] = useState<number | null>(null)
   const [slVal, setSlVal] = useState('')
   const [tpVal, setTpVal] = useState('')
@@ -39,7 +40,7 @@ export function PositionsTable() {
         <ScrollArea className="max-h-[400px]">
           {positions.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">
-              Belum ada posisi terbuka. Buka trade dari Order Ticket.
+              Belum ada posisi terbuka. Buka trade dari Order Ticket (F1/F2 hot keys).
             </div>
           ) : (
             <table className="w-full">
@@ -52,6 +53,7 @@ export function PositionsTable() {
                   <th className={cn('text-right', rowPad)}>Open</th>
                   <th className={cn('text-right', rowPad)}>SL/TP</th>
                   <th className={cn('text-right', rowPad)}>P&L</th>
+                  <th className={cn('text-center', rowPad)}>Time</th>
                   <th className={cn('text-right', rowPad)}>Action</th>
                 </tr>
               </thead>
@@ -70,7 +72,10 @@ export function PositionsTable() {
                           {p.side}
                         </Badge>
                       </td>
-                      <td className={cn('text-right tabular-nums', rowPad)}>{p.lots.toFixed(2)}</td>
+                      <td className={cn('text-right tabular-nums', rowPad)}>
+                        {p.lots.toFixed(2)}
+                        {p.partialClosed && <span className="ml-1 text-[10px] text-amber-500">P</span>}
+                      </td>
                       <td className={cn('text-right tabular-nums', rowPad)}>{p.openPrice.toFixed(digits)}</td>
                       <td className={cn('text-right tabular-nums', rowPad)}>
                         {editing === p.ticket ? (
@@ -102,6 +107,9 @@ export function PositionsTable() {
                       </td>
                       <td className={cn('text-right tabular-nums font-medium', rowPad, (p.profit ?? 0) >= 0 ? 'text-emerald-500' : 'text-red-500')}>
                         {(p.profit ?? 0) >= 0 ? '+' : ''}{(p.profit ?? 0).toFixed(2)}
+                      </td>
+                      <td className={cn('text-center', rowPad)}>
+                        <TradeTimer durationMs={p.durationMs ?? (Date.now() - new Date(p.openTime).getTime())} />
                       </td>
                       <td className={cn('text-right', rowPad)}>
                         {editing === p.ticket ? (
@@ -137,6 +145,18 @@ export function PositionsTable() {
                               }}
                             >
                               <Pencil className="size-3" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              onClick={async () => {
+                                const r: any = await partialClose(p.ticket, 0.5)
+                                if (r?.ok) toast.success(`Partial close 50%, P&L ${r.profit?.toFixed(2)}`)
+                              }}
+                              title="Partial close 50%"
+                            >
+                              50%
                             </Button>
                             <Button
                               size="sm"

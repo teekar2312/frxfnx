@@ -1,16 +1,57 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, ArrowDownRight, ArrowUpRight, Bot, CalendarClock, CandlestickChart, Clock, DollarSign, TrendingDown, TrendingUp, Wallet } from 'lucide-react'
+import { Activity, ArrowDownRight, ArrowUpRight, Bell, Bot, CalendarClock, CandlestickChart, Clock, DollarSign, TrendingDown, TrendingUp, Wallet } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useMarketStore } from '@/store/market'
 import { useUIStore } from '@/store/ui'
+import { useExtMarketStore } from '@/store/extended'
 import { useMt5Socket } from '@/lib/mt5/socket'
 import { dayName, formatCountdown, isTradingAllowedNow } from '@/lib/mt5/schedule'
+import { CurrencyStrengthMeter } from '@/components/indicators/currency-strength-meter'
 import { cn } from '@/lib/utils'
+
+function RecentAlertsWidget() {
+  const alerts = useExtMarketStore((s) => s.alertEvents).slice(0, 5)
+  const { ackAlert } = useMt5Socket()
+  return (
+    <Card className="lg:col-span-2">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Bell className="size-4" /> Recent Alerts
+          {alerts.length > 0 && (
+            <Badge variant="outline" className="text-xs text-red-500">{alerts.filter((a) => !a.acknowledged).length} baru</Badge>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        {alerts.length === 0 ? (
+          <div className="p-6 text-center text-sm text-muted-foreground">Tidak ada alert aktif</div>
+        ) : (
+          <div className="space-y-1 p-2">
+            {alerts.map((a) => (
+              <div key={a.id} className={cn(
+                'flex items-center justify-between rounded-md border px-2 py-1.5 text-xs',
+                a.severity === 'critical' && 'border-red-500/40 bg-red-500/5',
+                a.severity === 'warn' && 'border-amber-500/40 bg-amber-500/5',
+                a.acknowledged && 'opacity-50',
+              )}>
+                <span className="flex items-center gap-2">
+                  <span className={cn('size-2 rounded-full', a.severity === 'critical' ? 'bg-red-500' : a.severity === 'warn' ? 'bg-amber-500' : 'bg-sky-500')} />
+                  <span>{a.message}</span>
+                </span>
+                <span className="text-[10px] text-muted-foreground">{new Date(a.timestamp).toLocaleTimeString('id-ID')}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
 
 function StatCard({
   title,
@@ -122,6 +163,12 @@ export function DashboardView() {
           icon={allowed ? <Activity className="size-5" /> : <Clock className="size-5" />}
           trend={allowed ? 'up' : 'neutral'}
         />
+      </div>
+
+      {/* Currency Strength Meter + Recent Alerts */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <CurrencyStrengthMeter />
+        <RecentAlertsWidget />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

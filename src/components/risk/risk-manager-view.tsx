@@ -260,6 +260,37 @@ export function RiskManagerView() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Correlation Matrix & Aggregate Exposure (Pillar 5 extension) */}
+      <CorrelationMatrix />
+
+      {/* Risk of Ruin Calculator (new fitur) */}
+      <RiskOfRuinCalculator />
+
+      {/* Auto-Disable Pre-News */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-base text-amber-500">
+            <AlertTriangle className="size-4" /> Auto-Disable Trading Pre-News
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-xs">
+          <p className="text-muted-foreground">Sistem akan otomatis flatten posisi X menit sebelum rilis berita high-impact untuk hindari gap risk (Pilar 7).</p>
+          <div className="rounded-md border bg-muted/30 p-2 text-xs">
+            <div className="font-medium">Aturan aktif:</div>
+            <ul className="mt-1 list-disc pl-4 text-muted-foreground">
+              <li>Pre-News Flatten: 2 menit sebelum high-impact USD news</li>
+              <li>Max Daily Loss 3%: flatten semua jika hari ini loss 3%+</li>
+              <li>Max Weekly Loss 5%: flatten semua jika minggu ini loss 5%+</li>
+            </ul>
+            <div className="mt-2 text-amber-500">Konfigurasi via Settings {`>`} Auto-Trade Rules</div>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }
+
+// Inline import to avoid circular ref
+import { CorrelationMatrix } from '@/components/indicators/correlation-matrix'
+import { RiskOfRuinCalculator } from '@/components/risk/risk-of-ruin'

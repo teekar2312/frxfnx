@@ -11,24 +11,38 @@ import { AiAssistantView } from '@/components/ai/ai-assistant-view'
 import { RiskManagerView } from '@/components/risk/risk-manager-view'
 import { LogsView } from '@/components/logs/logs-view'
 import { SettingsView } from '@/components/settings/settings-view'
+import { BacktestView } from '@/components/backtest/backtest-view'
+import { JournalView } from '@/components/journal/journal-view'
+import { AnalyticsView } from '@/components/analytics/analytics-view'
+import { AlertsCenter } from '@/components/alerts/alerts-center'
+import { CopyTradeView } from '@/components/copytrade/copy-trade-view'
 import { useMt5Socket } from '@/lib/mt5/socket'
+import { useHotkeys } from '@/lib/hotkeys'
 import { useUIStore } from '@/store/ui'
 import { useMarketStore } from '@/store/market'
 import { isTradingAllowedNow } from '@/lib/mt5/schedule'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 
 export default function Home() {
   const [tab, setTab] = useState<TabId>('dashboard')
   const [collapsed, setCollapsed] = useState(false)
-  // init socket & trading actions
-  const { launchMt5 } = useMt5Socket()
+  const { launchMt5, flattenAll } = useMt5Socket()
   const density = useUIStore((s) => s.density)
   const settings = useUIStore((s) => s.settings)
   const socketReady = useMarketStore((s) => s.socketReady)
   const mt5Connected = useMarketStore((s) => s.mt5.connected)
   const setTradingAllowed = useMarketStore((s) => s.setTradingAllowed)
 
-  // trading-allowed checker setiap 30 detik
+  // Hot keys
+  useHotkeys({
+    onCloseAll: () => {
+      flattenAll().then((r: any) => toast.info(`Flatten: ${r?.closed ?? 0} ditutup`))
+    },
+    onSettings: () => setTab('settings'),
+  })
+
+  // trading-allowed checker
   useEffect(() => {
     const tick = () => {
       const allowed = isTradingAllowedNow({
@@ -43,7 +57,7 @@ export default function Home() {
     return () => clearInterval(t)
   }, [settings, setTradingAllowed])
 
-  // Auto-launch MT5: trigger ketika socket ready & MT5 belum connected & setting autoLaunch on
+  // Auto-launch MT5
   useEffect(() => {
     if (settings.mt5AutoLaunch && socketReady && !mt5Connected) {
       launchMt5({ path: settings.mt5Path, login: settings.mt5Login, server: settings.mt5Server })
@@ -63,16 +77,19 @@ export default function Home() {
           {tab === 'trading' && <TradingView />}
           {tab === 'news' && <NewsCalendarView />}
           {tab === 'strategy' && <StrategyView />}
+          {tab === 'analytics' && <AnalyticsView />}
+          {tab === 'journal' && <JournalView />}
+          {tab === 'backtest' && <BacktestView />}
           {tab === 'ai' && <AiAssistantView />}
           {tab === 'risk' && <RiskManagerView />}
+          {tab === 'alerts' && <AlertsCenter />}
+          {tab === 'copytrade' && <CopyTradeView />}
           {tab === 'logs' && <LogsView />}
           {tab === 'settings' && <SettingsView />}
         </main>
         <footer className="mt-auto border-t bg-background/70 px-3 py-2 text-[10px] text-muted-foreground backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>
-              FINEX Forex Trading Platform · MT5 · Groq · Tiingo · Python 3.14 backend
-            </span>
+            <span>FINEX Forex Trading Platform v2.0 · MT5 · Groq · Tiingo · Python 3.14 backend · 20 fitur lengkap</span>
             <span className="hidden md:inline">
               {settings.brokerName} · {settings.mt5Server} · Trading window {settings.tradingStart}-{settings.tradingEnd} {settings.blockWeekend ? '(No Sabtu/Minggu)' : ''}
             </span>

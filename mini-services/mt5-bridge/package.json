@@ -2,7 +2,8 @@
   "name": "mt5-bridge",
   "version": "1.0.0",
   "scripts": {
-    "dev": "bun index.ts"
+    "dev": "bun index.ts",
+    "dev:node": "node --experimental-strip-types index.ts"
   },
   "dependencies": {
     "socket.io": "^4.8.4"

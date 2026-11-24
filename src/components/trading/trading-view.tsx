@@ -6,10 +6,15 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PriceChart } from '@/components/trading/price-chart'
 import { OrderTicket } from '@/components/trading/order-ticket'
 import { PositionsTable } from '@/components/trading/positions-table'
+import { PendingOrdersView } from '@/components/trading/pending-orders-view'
+import { IndicatorsPanel } from '@/components/indicators/indicators-panel'
+import { DrawingToolbar } from '@/components/drawing/drawing-toolbar'
+import { SessionMarkers } from '@/components/drawing/session-markers'
 import { useUIStore } from '@/store/ui'
 
 export function TradingView() {
   const [tf, setTf] = useState<'1s' | '5s' | '15s'>('1s')
+  const [tab, setTab] = useState<'market' | 'pending' | 'indicators' | 'drawing'>('market')
   const activeSymbol = useUIStore((s) => s.activeSymbol)
   return (
     <div className="grid grid-cols-1 gap-4 p-3 md:p-5 lg:grid-cols-3">
@@ -17,35 +22,39 @@ export function TradingView() {
         <Card>
           <CardHeader className="flex-row items-center justify-between pb-2">
             <CardTitle className="text-base">Live Chart · {activeSymbol}</CardTitle>
-            <Tabs value={tf} onValueChange={(v) => setTf(v as any)}>
-              <TabsList className="h-8">
-                <TabsTrigger value="1s" className="text-xs">1s</TabsTrigger>
-                <TabsTrigger value="5s" className="text-xs">M1</TabsTrigger>
-                <TabsTrigger value="15s" className="text-xs">M15</TabsTrigger>
-              </TabsList>
-            </Tabs>
+            <div className="flex items-center gap-2">
+              <SessionMarkers />
+              <Tabs value={tf} onValueChange={(v) => setTf(v as any)}>
+                <TabsList className="h-8">
+                  <TabsTrigger value="1s" className="text-xs">1s</TabsTrigger>
+                  <TabsTrigger value="5s" className="text-xs">M1</TabsTrigger>
+                  <TabsTrigger value="15s" className="text-xs">M15</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
           </CardHeader>
           <CardContent>
             <PriceChart symbol={activeSymbol} height={320} />
           </CardContent>
         </Card>
+
+        <IndicatorsPanel />
+        <DrawingToolbar />
         <PositionsTable />
       </div>
       <div className="space-y-4">
-        <OrderTicket />
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Eksekusi Cepat (One-Click)</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-xs text-muted-foreground">
-            <p>
-              One-click execution memerlukan konfirmasi SL/TP berbasis pips & server-side stop. Lot mengikuti risk {`{riskPerTradePct}`}%.
-            </p>
-            <p className="text-amber-500">
-              Catatan: Hindari pending order dekat dengan jam rilis berita (slippage risk).
-            </p>
-          </CardContent>
-        </Card>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as any)}>
+          <TabsList className="grid w-full grid-cols-4">
+            <TabsTrigger value="market" className="text-xs">Market</TabsTrigger>
+            <TabsTrigger value="pending" className="text-xs">Pending</TabsTrigger>
+            <TabsTrigger value="indicators" className="text-xs">Indikator</TabsTrigger>
+            <TabsTrigger value="drawing" className="text-xs">Drawing</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        {tab === 'market' && <OrderTicket />}
+        {tab === 'pending' && <PendingOrdersView />}
+        {tab === 'indicators' && <IndicatorsPanel />}
+        {tab === 'drawing' && <DrawingToolbar />}
       </div>
     </div>
   )

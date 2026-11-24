@@ -231,3 +231,219 @@ model LogEntry {
   @@index([source])
   @@index([createdAt])
 }
+
+// ============================================================
+// FITUR BARU (20 fitur prioritas)
+// ============================================================
+
+// Pending order (Buy/Sell Stop/Limit) — Strategi B 15-Min Breakout
+model PendingOrder {
+  id          String   @id @default(cuid())
+  ticket      Int      @unique // MT5 ticket
+  accountId   String
+  symbol      String
+  orderType   String   // BUY_STOP | SELL_STOP | BUY_LIMIT | SELL_LIMIT
+  lots        Float
+  triggerPrice Float
+  sl          Float?
+  tp          Float?
+  slPips      Float?
+  tpPips      Float?
+  status      String   @default("pending") // pending | filled | cancelled | expired
+  strategyId  String?
+  strategyName String?
+  isAuto      Boolean  @default(false)
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([symbol])
+  @@index([status])
+}
+
+// Alert rules (price, news, spread, SL/TP hit)
+model AlertRule {
+  id          String   @id @default(cuid())
+  type        String   // price_above | price_below | news_pre | spread_wide | sl_tp_hit | margin_low | daily_stop
+  symbol      String?
+  condition   String   // JSON-encoded condition params
+  message     String
+  severity    String   @default("info") // info | warn | critical
+  enabled     Boolean  @default(true)
+  triggerCount Int     @default(0)
+  lastTriggeredAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([type])
+  @@index([enabled])
+}
+
+// Backtest run
+model BacktestRun {
+  id           String   @id @default(cuid())
+  strategyId   String
+  strategyName String
+  symbol       String
+  timeframe    String   @default("M15")
+  startDate    DateTime
+  endDate      DateTime
+  // Results
+  initialBalance Float
+  finalBalance   Float
+  totalTrades    Int
+  wins           Int
+  losses         Int
+  winRate        Float
+  profitFactor   Float
+  maxDrawdown    Float
+  sharpeRatio    Float
+  expectancy     Float
+  avgRR          Float
+  maxConsecutiveLosses Int
+  // Config snapshot
+  configJson    String
+  tradesJson    String   // detail semua trade
+  createdAt     DateTime @default(now())
+
+  @@index([strategyId])
+  @@index([createdAt])
+}
+
+// Trade journal entry (manual notes per trade)
+model JournalEntry {
+  id          String   @id @default(cuid())
+  tradeTicket Int?     // link to Trade ticket
+  symbol      String
+  side        String
+  entryTime   DateTime
+  exitTime    DateTime?
+  entryPrice  Float
+  exitPrice   Float?
+  lots        Float
+  pnl         Float
+  rrRealized  Float?
+  strategy    String?
+  setupQuality String?  // A | B | C (rating manual)
+  emotion     String?   // calm | anxious | greedy | fearful
+  mistakes    String?
+  lessons     String?
+  screenshotPath String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tradeTicket])
+  @@index([symbol])
+  @@index([entryTime])
+}
+
+// Hot key mapping
+model Hotkey {
+  id        String  @id @default(cuid())
+  key       String  @unique  // F1, F2, etc
+  action    String  // buy_market | sell_market | close_all | reverse_position | flatten | open_settings
+  label     String
+  enabled   Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Drawing object (trendline, fib, S/R, etc) — saved per symbol
+model DrawingObject {
+  id        String   @id @default(cuid())
+  symbol    String
+  type      String   // trendline | horizontal | fibonacci | rectangle | text
+  pointsJson String  // JSON array of {x, y, time, price}
+  styleJson String   // color, lineWidth, etc
+  label     String?
+  visible   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([symbol])
+}
+
+// Multi-account (untuk switch demo/live FINEX)
+model Mt5AccountConfig {
+  id        String   @id @default(cuid())
+  label     String   // "Demo FINEX", "Live FINEX #1"
+  login     String
+  server    String
+  broker    String   @default("FINEX Indonesia")
+  accountType String @default("live") // live | demo | contest
+  isDefault Boolean  @default(false)
+  isActive  Boolean  @default(true)
+  lastUsed  DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([login])
+  @@index([isActive])
+}
+
+// API key vault (encrypted at rest via OS-level; here we only store metadata)
+model ApiKeyVault {
+  id        String   @id @default(cuid())
+  provider  String   @unique // groq | tiingo | ollama | finex_api
+  keyName   String
+  keyMasked String   // hanya tampilan: gsk_***xxxx
+  storedIn  String   @default("localstorage") // localstorage | keychain | env
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// P&L report (auto-generated periodic)
+model PnlReport {
+  id        String   @id @default(cuid())
+  period    String   // daily | weekly | monthly | yearly
+  startDate DateTime
+  endDate   DateTime
+  startingBalance Float
+  endingBalance   Float
+  totalPnl        Float
+  totalTrades     Int
+  winRate         Float
+  profitFactor    Float
+  maxDrawdown     Float
+  bestTrade       Float
+  worstTrade      Float
+  pairsSummaryJson String  // P&L per pair
+  strategiesSummaryJson String  // P&L per strategy
+  pdfPath         String?
+  createdAt       DateTime @default(now())
+
+  @@index([period])
+  @@index([startDate])
+}
+
+// Auto-disable trading config (pre-news flatten)
+model AutoTradeRule {
+  id          String   @id @default(cuid())
+  name        String
+  enabled     Boolean  @default(true)
+  type        String   // pre_news_flatten | max_daily_loss | max_weekly_loss | trailing_stop_template
+  minutesBefore Int?   // menit sebelum rilis (untuk pre_news_flatten)
+  impactFilter String? // high | medium
+  countryFilter String? // USD | EUR | all
+  flattenAction String? @default("close_all") // close_all | reduce_50 | hedge
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Trade cloning (copy trading) — sumber & target
+model CopyTradeSubscription {
+  id           String   @id @default(cuid())
+  sourceLogin  String   // master account
+  targetLogin  String   // subscriber account
+  scaleLots    Float    @default(1.0) // multiplier lot
+  reverseMode  Boolean  @default(false)
+  enabled      Boolean  @default(true)
+  totalCopied  Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([sourceLogin])
+  @@index([targetLogin])
+}
