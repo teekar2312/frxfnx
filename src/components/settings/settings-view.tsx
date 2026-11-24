@@ -268,9 +268,7 @@ function ApiVaultTab() {
   const [groq, setGroq] = useState('')
   const [tiingo, setTiingo] = useState('')
   const [local, setLocal] = useState('')
-  const { saveKey, getVault, maskKey, deleteKey, saveToKeychain } = useVault()
-
-  const vault = getVault()
+  const { vault, saveKey, deleteKey, saveToKeychain } = useVault()
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

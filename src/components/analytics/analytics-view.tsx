@@ -181,7 +181,7 @@ export function AnalyticsView() {
                 </thead>
                 <tbody>
                   {trades.slice(0, 50).map((t) => (
-                    <tr key={t.ticket} className="border-b">
+                    <tr key={`${t.ticket}-${t.closeTime}-${t.lots}`} className="border-b">
                       <td className="px-2 py-1 tabular-nums text-muted-foreground">{t.ticket}</td>
                       <td className="px-2 py-1 font-medium">{t.symbol}</td>
                       <td className="px-2 py-1">
