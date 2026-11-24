@@ -52,3 +52,22 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Tool results (agent tool internal)
+/tool-results/
+
+# Database (SQLite) — jangan commit ke repo
+/db/*.db
+/db/*.db-journal
+
+# Mini-services log
+/mini-services/*/node_modules/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS files
+Thumbs.db
+*.swp
+*.swo
