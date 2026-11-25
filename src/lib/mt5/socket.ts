@@ -169,6 +169,8 @@ export function useMt5Socket() {
     deleteAlertRule: (id: string) => ensureSocket()?.emit('alert:delete', { id }),
     // Auto-trade rules
     setAutoTradeRules: (rules: AutoTradeRule[]) => ensureSocket()?.emit('autotrade:rules:set', rules),
+    // Trading session (sync ke backend agar openMarket bisa validate)
+    setTradingSession: (session: string) => ensureSocket()?.emit('trading:session:set', { session }),
     // Accounts
     switchAccount: (id: string) => ensureSocket()?.emit('accounts:switch', { id }),
     addAccount: (acc: AccountConfig) => ensureSocket()?.emit('accounts:add', acc),

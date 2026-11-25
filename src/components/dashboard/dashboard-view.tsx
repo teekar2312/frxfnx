@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, ArrowDownRight, ArrowUpRight, Bell, Bot, CalendarClock, CandlestickChart, Clock, DollarSign, TrendingDown, TrendingUp, Wallet } from 'lucide-react'
+import { Activity, ArrowDownRight, ArrowUpRight, Bell, Bot, CalendarClock, CandlestickChart, Clock, DollarSign, Globe, TrendingDown, TrendingUp, Wallet } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,7 @@ import { useUIStore } from '@/store/ui'
 import { useExtMarketStore } from '@/store/extended'
 import { useMt5Socket } from '@/lib/mt5/socket'
 import { dayName, formatCountdown, isTradingAllowedNow } from '@/lib/mt5/schedule'
+import { getActiveSessions, getPrimaryActiveSession, getSession, formatSessionHours, volatilityLabel, TRADING_SESSIONS, isSessionActive } from '@/lib/mt5/sessions'
 import { CurrencyStrengthMeter } from '@/components/indicators/currency-strength-meter'
 import { cn } from '@/lib/utils'
 
@@ -48,6 +49,131 @@ function RecentAlertsWidget() {
             ))}
           </div>
         )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ActiveSessionsWidget() {
+  const [now, setNow] = useState<Date | null>(null)
+  const tradingSession = useUIStore((s) => s.settings.tradingSession ?? 'all')
+
+  useEffect(() => {
+    setNow(new Date())
+    const t = setInterval(() => setNow(new Date()), 30000)
+    return () => clearInterval(t)
+  }, [])
+
+  if (!now) return null
+  const activeSessions = getActiveSessions(now)
+  const primarySession = getPrimaryActiveSession(now)
+  const selectedSession = getSession(tradingSession as any)
+  const isSelectedActive = isSessionActive(selectedSession, now)
+  const hourWIB = String((now.getUTCHours() + 7) % 24).padStart(2, '0')
+  const minWIB = String(now.getUTCMinutes()).padStart(2, '0')
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center justify-between text-base">
+          <span className="flex items-center gap-2">
+            <Globe className="size-4" /> Sesi Trading Aktif
+          </span>
+          <Badge variant="outline" className="text-xs tabular-nums">
+            WIB {hourWIB}:{minWIB}
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {/* Active sessions list */}
+        <div>
+          <div className="mb-1 text-[10px] uppercase text-muted-foreground">Sedang aktif ({activeSessions.length})</div>
+          {activeSessions.length === 0 ? (
+            <div className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+              Pasar forex tutup (weekend) — tidak ada sesi aktif
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {activeSessions.map((s) => (
+                <div
+                  key={s.id}
+                  className="flex items-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/5 px-2 py-1.5 text-xs"
+                >
+                  <span className="size-2 rounded-full" style={{ background: s.color }} />
+                  <span className="font-medium">{s.shortName}</span>
+                  <span className="text-muted-foreground">· {formatSessionHours(s)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Selected session status */}
+        <div className={cn(
+          'rounded-md border p-3 text-xs',
+          isSelectedActive ? 'border-emerald-500/40 bg-emerald-500/10' : 'border-amber-500/40 bg-amber-500/5'
+        )}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="size-3 rounded-full" style={{ background: selectedSession.color }} />
+              <span className="font-semibold">Sesi Dipilih: {selectedSession.name}</span>
+            </div>
+            <Badge className={cn('text-[10px]', isSelectedActive ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-white')}>
+              {isSelectedActive ? 'TRADING ACTIVE' : 'WAITING'}
+            </Badge>
+          </div>
+          <div className="mt-1 text-muted-foreground">
+            Jam: {formatSessionHours(selectedSession)} · Volatilitas: <span className={volatilityLabel(selectedSession.volatility).color}>{volatilityLabel(selectedSession.volatility).label}</span>
+          </div>
+          {selectedSession.primaryPairs.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              <span className="text-muted-foreground">Pairs:</span>
+              {selectedSession.primaryPairs.map((p) => (
+                <Badge key={p} variant="outline" className="text-[9px]">{p}</Badge>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* All sessions overview (timeline kecil) */}
+        <div>
+          <div className="mb-1 text-[10px] uppercase text-muted-foreground">Timeline 24 jam WIB</div>
+          <div className="relative h-12 w-full rounded-md border bg-muted/20">
+            {/* Hour grid */}
+            <div className="absolute inset-0 flex justify-between text-[8px] text-muted-foreground">
+              {[0, 6, 12, 18, 24].map((h) => (
+                <span key={h} className="pt-1">{String(h).padStart(2, '0')}</span>
+              ))}
+            </div>
+            {/* Sessions bars */}
+            {TRADING_SESSIONS.map((s, i) => {
+              const top = (i % 6) * 6 + 4
+              const leftPct = (s.startHour / 24) * 100
+              const widthPct = ((s.endHour - s.startHour) / 24) * 100
+              if (s.crossMidnight) {
+                return (
+                  <div key={s.id} className="absolute h-1.5" style={{ top }}>
+                    <div className="absolute h-1.5 rounded" style={{ left: `${leftPct}%`, width: `${(24 - s.startHour) / 24 * 100}%`, background: s.color }} />
+                    <div className="absolute h-1.5 rounded" style={{ left: 0, width: `${(s.endHour - 24) / 24 * 100}%`, background: s.color }} />
+                  </div>
+                )
+              }
+              return (
+                <div
+                  key={s.id}
+                  className={cn('absolute h-1.5 rounded', tradingSession === s.id && 'ring-1 ring-foreground')}
+                  style={{ top, left: `${leftPct}%`, width: `${widthPct}%`, background: s.color }}
+                  title={`${s.name} (${formatSessionHours(s)})`}
+                />
+              )
+            })}
+            {/* NOW indicator */}
+            <div
+              className="absolute top-0 bottom-0 w-0.5 bg-foreground"
+              style={{ left: `${(((now.getUTCHours() + 7) % 24 + now.getUTCMinutes() / 60) / 24) * 100}%` }}
+            />
+          </div>
+        </div>
       </CardContent>
     </Card>
   )
@@ -111,7 +237,7 @@ export function DashboardView() {
   const effectiveNow = now ?? new Date(0) // fallback ke epoch untuk render awal
 
   const allowed = isTradingAllowedNow(
-    { start: settings.tradingStart ?? '08:00', end: settings.tradingEnd ?? '23:30', blockWeekend: settings.blockWeekend ?? true },
+    { start: settings.tradingStart ?? '08:00', end: settings.tradingEnd ?? '23:30', blockWeekend: settings.blockWeekend ?? true, tradingSession: settings.tradingSession ?? 'all' },
     effectiveNow,
   )
 
@@ -165,11 +291,14 @@ export function DashboardView() {
         />
       </div>
 
-      {/* Currency Strength Meter + Recent Alerts */}
+      {/* Currency Strength Meter + Recent Alerts + Active Sessions */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <CurrencyStrengthMeter />
         <RecentAlertsWidget />
       </div>
+
+      {/* Active Trading Sessions Widget */}
+      <ActiveSessionsWidget />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Watchlist harga */}

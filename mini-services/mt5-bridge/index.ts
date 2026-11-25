@@ -408,12 +408,46 @@ setInterval(step, 1000)
 // ============================================================
 // TRADING ACTIONS
 // ============================================================
+// Session definitions (must match frontend src/lib/mt5/sessions.ts)
+const SESSION_DEFS: Record<string, { startHour: number; endHour: number; crossMidnight: boolean }> = {
+  all: { startHour: 0, endHour: 24, crossMidnight: false },
+  sydney: { startHour: 5, endHour: 14, crossMidnight: false },
+  tokyo: { startHour: 7, endHour: 16, crossMidnight: false },
+  london: { startHour: 15, endHour: 24, crossMidnight: false },
+  newyork: { startHour: 20, endHour: 29, crossMidnight: true },  // 20:00-05:00+1
+  overlap_sydney_tokyo: { startHour: 7, endHour: 14, crossMidnight: false },
+  overlap_london_ny: { startHour: 20, endHour: 24, crossMidnight: false },
+}
+
+// State untuk session yang dipilih (di-update oleh client)
+let currentTradingSession: string = 'all'
+
 function isTradingAllowedNow(): boolean {
   const now = new Date()
   const day = now.getDay()
+  // Weekend check (Sabtu/Minggu)
   if (day === 0 || day === 6) return false
-  const hhmm = now.getHours() * 100 + now.getMinutes()
-  return hhmm >= 800 && hhmm <= 2330
+
+  // Hitung hour WIB dari UTC
+  const hourWIB = (now.getUTCHours() + 7) % 24
+
+  if (currentTradingSession === 'all' || !currentTradingSession) {
+    // Mode 'all': gunakan window 08:00-23:30 WIB (default)
+    const hhmm = hourWIB * 100 + now.getUTCMinutes()
+    return hhmm >= 800 && hhmm <= 2330
+  }
+
+  // Mode sesi spesifik
+  const session = SESSION_DEFS[currentTradingSession]
+  if (!session) return false
+
+  if (session.crossMidnight) {
+    // NY session: 20:00-05:00+1 → hourWIB >= 20 ATAU hourWIB < (endHour - 24) = 5
+    const endHourAdj = session.endHour - 24
+    return hourWIB >= session.startHour || hourWIB < endHourAdj
+  }
+  // Normal: hourWIB harus dalam [startHour, endHour)
+  return hourWIB >= session.startHour && hourWIB < session.endHour
 }
 
 function openMarket(symbol: string, side: 'BUY' | 'SELL', lots: number, opts?: { sl?: number; tp?: number; isAuto?: boolean; strategyId?: string; trailingStopPips?: number; originalLots?: number }): { ok: boolean; ticket?: number; msg?: string } {
@@ -779,6 +813,14 @@ io.on('connection', (socket) => {
     socket.emit('mt5:launch:result', r)
   })
   socket.on('mt5:disconnect', () => disconnectMt5())
+
+  // Update trading session (dipilih di Settings)
+  socket.on('trading:session:set', (data: { session: string }) => {
+    if (data?.session && SESSION_DEFS[data.session]) {
+      currentTradingSession = data.session
+      logEvent('info', 'scheduler', `Trading session diubah ke: ${data.session}`)
+    }
+  })
 
   // Trade
   socket.on('trade:open', (p: any) => socket.emit('trade:open:result', openMarket(p.symbol, p.side, p.lots, p)))

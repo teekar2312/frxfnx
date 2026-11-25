@@ -1,4 +1,7 @@
 // Helper untuk jam trading & filter akhir pekan (sesuai user req)
+// Sekarang support pemilihan sesi trading (Sydney, Tokyo, London, NY, Overlap)
+
+import { getSession, isSessionActive, type TradingSession, type SessionId } from '@/lib/mt5/sessions'
 
 const DAYS = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu']
 
@@ -17,23 +20,71 @@ export function isWithinTradingHours(start: string, end: string, now = new Date(
   return cur >= s && cur <= e
 }
 
-export function isTradingAllowedNow(opts: { start: string; end: string; blockWeekend: boolean }, now = new Date()): boolean {
+export interface TradingScheduleOpts {
+  start: string       // HH:MM (fallback manual window)
+  end: string
+  blockWeekend: boolean
+  tradingSession?: SessionId  // jika 'all' atau undefined, pakai manual window
+}
+
+// Cek apakah trading diizinkan saat ini
+// - Jika tradingSession = 'all' atau undefined: pakai window start-end (lama)
+// - Jika tradingSession = specific session: trading aktif jika sesi aktif
+export function isTradingAllowedNow(opts: TradingScheduleOpts, now = new Date()): boolean {
   if (opts.blockWeekend && isWeekend(now)) return false
+
+  // Mode sesi: cek apakah sesi yang dipilih sedang aktif
+  if (opts.tradingSession && opts.tradingSession !== 'all') {
+    const session = getSession(opts.tradingSession)
+    return isSessionActive(session, now)
+  }
+
+  // Mode window manual (default 'all' atau tidak ada session dipilih)
   return isWithinTradingHours(opts.start, opts.end, now)
 }
 
-export function nextAllowedSession(opts: { start: string; end: string; blockWeekend: boolean }, now = new Date()): Date {
-  // Hitung kapan trading diizinkan berikutnya
-  const [sh, sm] = opts.start.split(':').map(Number)
+// Dapatkan waktu trading diizinkan berikutnya (untuk countdown display)
+export function nextAllowedSession(opts: TradingScheduleOpts, now = new Date()): Date {
+  // Jika sudah diizinkan, return now
   if (isTradingAllowedNow(opts, now)) return now
-  // jika weekend, jumat ke depan
+
+  // Mode sesi: hitung next session open
+  if (opts.tradingSession && opts.tradingSession !== 'all') {
+    const session = getSession(opts.tradingSession)
+    // Get hour in WIB via session helper
+    const utcHour = now.getUTCHours()
+    const utcMin = now.getUTCMinutes()
+    const hourWIB = (utcHour + 7) % 24
+    const curMin = hourWIB * 60 + utcMin
+    let startMin = session.startHour * 60
+    if (curMin < startMin) {
+      // Open hari ini
+      const cand = new Date(now)
+      // Hitung delta menit ke start
+      const deltaMin = startMin - curMin
+      cand.setUTCMinutes(cand.getUTCMinutes() + deltaMin)
+      return cand
+    }
+    // Open besok
+    const cand = new Date(now)
+    cand.setUTCDate(cand.getUTCDate() + 1)
+    const tomorrowHourWIB = (cand.getUTCHours() + 7) % 24
+    const tomorrowCurMin = tomorrowHourWIB * 60 + cand.getUTCMinutes()
+    const deltaMin = (24 * 60 - tomorrowCurMin) + startMin
+    cand.setUTCMinutes(cand.getUTCMinutes() + deltaMin)
+    // Skip weekend jika diblokir
+    while (opts.blockWeekend && (cand.getDay() === 0 || cand.getDay() === 6)) {
+      cand.setDate(cand.getDate() + 1)
+    }
+    return cand
+  }
+
+  // Mode window manual
+  const [sh, sm] = opts.start.split(':').map(Number)
   let cand = new Date(now)
-  const [eh, em] = opts.end.split(':').map(Number)
-  // jika sebelum end dan bukan weekend: jam start hari ini
   cand.setHours(sh, sm, 0, 0)
   if (cand.getTime() < now.getTime() || (opts.blockWeekend && (cand.getDay() === 0 || cand.getDay() === 6))) {
     cand.setDate(cand.getDate() + 1)
-    // skip Sabtu (6) dan Minggu (0)
     while (opts.blockWeekend && (cand.getDay() === 0 || cand.getDay() === 6)) {
       cand.setDate(cand.getDate() + 1)
     }
@@ -57,4 +108,9 @@ export function formatCountdown(ms: number): string {
 
 export function dayName(d = new Date()): string {
   return DAYS[d.getDay()]
+}
+
+// Helper: convert WIB hour ke Date dengan hour yang benar
+export function getHourWIB(d: Date = new Date()): number {
+  return (d.getUTCHours() + 7) % 24
 }

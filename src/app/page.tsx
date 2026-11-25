@@ -27,7 +27,7 @@ import { toast } from 'sonner'
 export default function Home() {
   const [tab, setTab] = useState<TabId>('dashboard')
   const [collapsed, setCollapsed] = useState(false)
-  const { launchMt5, flattenAll } = useMt5Socket()
+  const { launchMt5, flattenAll, setTradingSession } = useMt5Socket()
   const density = useUIStore((s) => s.density)
   const settings = useUIStore((s) => s.settings)
   const socketReady = useMarketStore((s) => s.socketReady)
@@ -49,6 +49,7 @@ export default function Home() {
         start: settings.tradingStart ?? '08:00',
         end: settings.tradingEnd ?? '23:30',
         blockWeekend: settings.blockWeekend ?? true,
+        tradingSession: settings.tradingSession ?? 'all',
       })
       setTradingAllowed(allowed)
     }
@@ -63,6 +64,13 @@ export default function Home() {
       launchMt5({ path: settings.mt5Path, login: settings.mt5Login, server: settings.mt5Server })
     }
   }, [settings.mt5AutoLaunch, socketReady, mt5Connected, settings.mt5Path, settings.mt5Login, settings.mt5Server, launchMt5])
+
+  // Sync trading session ke backend saat berubah
+  useEffect(() => {
+    if (socketReady && settings.tradingSession) {
+      setTradingSession(settings.tradingSession as string)
+    }
+  }, [socketReady, settings.tradingSession, setTradingSession])
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">

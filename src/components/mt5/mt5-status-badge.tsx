@@ -8,6 +8,7 @@ import { useMarketStore } from '@/store/market'
 import { useUIStore } from '@/store/ui'
 import { useMt5Socket } from '@/lib/mt5/socket'
 import { dayName, formatCountdown, isTradingAllowedNow } from '@/lib/mt5/schedule'
+import { getPrimaryActiveSession, getSession } from '@/lib/mt5/sessions'
 import { cn } from '@/lib/utils'
 
 export function Mt5StatusBadge() {
@@ -26,7 +27,7 @@ export function Mt5StatusBadge() {
 
   const effectiveNow = now ?? new Date(0)
   const allowed = isTradingAllowedNow(
-    { start: settings.tradingStart ?? '08:00', end: settings.tradingEnd ?? '23:30', blockWeekend: settings.blockWeekend ?? true },
+    { start: settings.tradingStart ?? '08:00', end: settings.tradingEnd ?? '23:30', blockWeekend: settings.blockWeekend ?? true, tradingSession: settings.tradingSession ?? 'all' },
     effectiveNow,
   )
 
@@ -58,13 +59,25 @@ export function Mt5StatusBadge() {
         {socketReady ? 'WS Live' : 'WS Off'}
       </Badge>
 
-      {/* Trading window */}
+      {/* Trading window + sesi aktif */}
       <Badge variant="outline" className={cn('gap-1', allowed ? 'border-emerald-500/40 text-emerald-500' : 'border-amber-500/40 text-amber-500')}>
         {allowed ? <Play className="size-3" /> : <Pause className="size-3" />}
         <span className="hidden sm:inline">{allowed ? 'Trade Active' : 'Trade Pause'}</span>
-        <span className="text-[10px] opacity-70 hidden md:inline">
-          {now ? `${dayName(now)} ${now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}` : '—'}
-        </span>
+        {now && (() => {
+          const primary = getPrimaryActiveSession(now)
+          const selectedSession = getSession((settings.tradingSession ?? 'all') as any)
+          return (
+            <>
+              <span className="hidden items-center gap-0.5 lg:inline-flex">
+                <span className="size-1.5 rounded-full" style={{ background: primary?.color ?? selectedSession.color }} />
+                {primary ? primary.shortName : selectedSession.shortName}
+              </span>
+              <span className="text-[10px] opacity-70 hidden md:inline">
+                {`${dayName(now)} ${now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`}
+              </span>
+            </>
+          )
+        })()}
         {!allowed && nextAllowed > 0 && (
           <span className="ml-1 text-[10px] opacity-80 hidden md:inline">{formatCountdown(nextAllowed)}</span>
         )}

@@ -7,6 +7,7 @@ export type OrderType = 'MARKET' | 'BUY_STOP' | 'SELL_STOP' | 'BUY_LIMIT' | 'SEL
 export type Impact = 'high' | 'medium' | 'low'
 export type AiProvider = 'groq' | 'local'
 export type LocalAiType = 'ollama' | 'lmstudio' | 'vllm' | 'llamacpp' | 'custom'
+export type TradingSessionId = 'all' | 'sydney' | 'tokyo' | 'london' | 'newyork' | 'overlap_sydney_tokyo' | 'overlap_london_ny'
 
 export interface SymbolPrice {
   symbol: string
@@ -136,6 +137,7 @@ export interface AppSettings {
   tradingStart: string
   tradingEnd: string
   blockWeekend: boolean
+  tradingSession: TradingSessionId  // sesi trading yang dipilih
   tiingoApiKey: string
   groqApiKey: string
   groqModel: string

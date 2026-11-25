@@ -15,6 +15,8 @@ import { useExtMarketStore } from '@/store/extended'
 import { useMt5Socket } from '@/lib/mt5/socket'
 import { DEFAULT_HOTKEYS } from '@/lib/hotkeys'
 import { useVault } from '@/lib/vault'
+import { TRADING_SESSIONS, SESSION_ALL, getSession, isSessionActive, formatSessionHours, volatilityLabel, type SessionId, type TradingSession } from '@/lib/mt5/sessions'
+import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import type { AiProvider, LocalAiType } from '@/types'
 import { ModelSelectorGroq } from '@/components/ai/model-selector-groq'
@@ -95,28 +97,7 @@ export function SettingsView() {
         </TabsContent>
 
         <TabsContent value="schedule" className="mt-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">Jadwal Trading</CardTitle>
-            </CardHeader>
-            <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div>
-                <Label className="text-xs">Trading Start (HH:MM)</Label>
-                <Input type="time" value={draft.tradingStart ?? '08:00'} onChange={(e) => update('tradingStart', e.target.value)} className="h-9" />
-              </div>
-              <div>
-                <Label className="text-xs">Trading End (HH:MM)</Label>
-                <Input type="time" value={draft.tradingEnd ?? '23:30'} onChange={(e) => update('tradingEnd', e.target.value)} className="h-9" />
-              </div>
-              <div className="md:col-span-2 flex items-center gap-3">
-                <Switch checked={draft.blockWeekend ?? true} onCheckedChange={(v) => update('blockWeekend', v)} />
-                <Label className="text-xs">Blokir trading Sabtu &amp; Minggu (sangat disarankan)</Label>
-              </div>
-              <div className="md:col-span-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
-                Catatan: Pasar forex ditutup Sabtu &amp; Minggu. Trading tetap diizinkan pada hari kerja sesuai jendela waktu di atas.
-              </div>
-            </CardContent>
-          </Card>
+          <ScheduleTab draft={draft} update={update} />
         </TabsContent>
 
         <TabsContent value="ai" className="mt-4">
@@ -401,5 +382,218 @@ function AutoTradeTab() {
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+// Schedule Tab dengan pemilihan sesi trading
+function ScheduleTab({ draft, update }: { draft: any; update: (k: any, v: any) => void }) {
+  const [now, setNow] = useState<Date | null>(null)
+  useEffect(() => {
+    setNow(new Date())
+    const t = setInterval(() => setNow(new Date()), 30000)
+    return () => clearInterval(t)
+  }, [])
+
+  const sessions = [SESSION_ALL, ...TRADING_SESSIONS]
+  const selectedSession = getSession((draft.tradingSession ?? 'all') as SessionId)
+  const useManualWindow = (draft.tradingSession ?? 'all') === 'all'
+
+  return (
+    <div className="space-y-4">
+      {/* Pilih sesi trading */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center justify-between text-base">
+            <span>Pemilihan Sesi Trading</span>
+            {now && (
+              <Badge variant="outline" className="text-xs">
+                WIB: {String((now.getUTCHours() + 7) % 24).padStart(2, '0')}:{String(now.getUTCMinutes()).padStart(2, '0')}
+              </Badge>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+            {sessions.map((s) => {
+              const isActive = now && isSessionActive(s, now)
+              const isSelected = (draft.tradingSession ?? 'all') === s.id
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => update('tradingSession', s.id)}
+                  className={cn(
+                    'rounded-md border p-3 text-left transition-all',
+                    isSelected ? 'border-primary bg-primary/10 ring-1 ring-primary' : 'hover:border-foreground/20',
+                  )}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="size-3 rounded-full" style={{ background: s.color }} />
+                      <span className="text-sm font-semibold">{s.name}</span>
+                    </div>
+                    {isActive && (
+                      <Badge className="bg-emerald-500 text-white text-[10px]">ACTIVE</Badge>
+                    )}
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {formatSessionHours(s)} · {s.region}
+                  </div>
+                  <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+                    <span>Volatilitas:</span>
+                    <span className={volatilityLabel(s.volatility).color}>{volatilityLabel(s.volatility).label}</span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {s.primaryPairs.slice(0, 3).map((p) => (
+                      <Badge key={p} variant="outline" className="text-[9px]">{p}</Badge>
+                    ))}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <span className="font-semibold text-foreground">Sesi dipilih: {selectedSession.name}</span>
+            <p className="mt-1">{selectedSession.description}</p>
+            <p className="mt-1">Jam aktif: {formatSessionHours(selectedSession)}</p>
+            {selectedSession.cities.length > 1 && (
+              <p className="mt-1">Kota: {selectedSession.cities.join(', ')}</p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Manual window (fallback) — hanya aktif jika session = 'all' */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Manual Window (fallback untuk mode "Semua Sesi")</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div>
+            <Label className="text-xs">Trading Start (HH:MM)</Label>
+            <Input
+              type="time"
+              value={draft.tradingStart ?? '08:00'}
+              onChange={(e) => update('tradingStart', e.target.value)}
+              className="h-9"
+              disabled={!useManualWindow}
+            />
+          </div>
+          <div>
+            <Label className="text-xs">Trading End (HH:MM)</Label>
+            <Input
+              type="time"
+              value={draft.tradingEnd ?? '23:30'}
+              onChange={(e) => update('tradingEnd', e.target.value)}
+              className="h-9"
+              disabled={!useManualWindow}
+            />
+          </div>
+          <div className="md:col-span-2 flex items-center gap-3">
+            <Switch checked={draft.blockWeekend ?? true} onCheckedChange={(v) => update('blockWeekend', v)} />
+            <Label className="text-xs">Blokir trading Sabtu &amp; Minggu (sangat disarankan)</Label>
+          </div>
+          <div className="md:col-span-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+            {useManualWindow
+              ? 'Mode "Semua Sesi" aktif. Trading dibatasi oleh Manual Window di atas (jam Indonesia).'
+              : `Mode sesi "${selectedSession.shortName}" aktif. Manual Window diabaikan. Trading hanya diizinkan saat sesi ${selectedSession.shortName} aktif (${formatSessionHours(selectedSession)}).`}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Visualisasi timeline 24 jam */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Timeline 24 Jam (WIB)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SessionTimeline sessions={TRADING_SESSIONS} now={now} selectedId={draft.tradingSession ?? 'all'} />
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// Visualisasi timeline 24 jam menampilkan semua sesi
+function SessionTimeline({ sessions, now, selectedId }: { sessions: TradingSession[]; now: Date | null; selectedId: string }) {
+  const currentHour = now ? (now.getUTCHours() + 7) % 24 + (now.getUTCMinutes() / 60) : 0
+  return (
+    <div className="space-y-2">
+      {/* Hour scale */}
+      <div className="relative h-6 w-full">
+        <div className="flex justify-between text-[10px] text-muted-foreground">
+          {Array.from({ length: 25 }).map((_, h) => (
+            <span key={h} className={h % 6 === 0 ? 'font-medium' : ''}>
+              {h === 24 ? '24' : String(h).padStart(2, '0')}
+            </span>
+          ))}
+        </div>
+      </div>
+      {/* Sessions bars */}
+      <div className="relative h-32 w-full rounded-md border bg-muted/20">
+        {/* Current time indicator */}
+        {now && (
+          <div
+            className="absolute top-0 bottom-0 z-10 w-0.5 bg-foreground"
+            style={{ left: `${(currentHour / 24) * 100}%` }}
+          >
+            <div className="absolute -top-3 -translate-x-1/2 rounded bg-foreground px-1 text-[9px] text-background">
+              NOW
+            </div>
+          </div>
+        )}
+        {/* Sessions as bars */}
+        {sessions.map((s, i) => {
+          const top = i * 16 + 4
+          let leftPct = (s.startHour / 24) * 100
+          let widthPct = ((s.endHour - s.startHour) / 24) * 100
+          // Handle cross-midnight (NY: 20-29)
+          if (s.crossMidnight) {
+            // Two segments: startHour-24 and 0-(endHour-24)
+            return (
+              <div key={s.id} style={{ top }} className="absolute h-3">
+                <div
+                  className={cn(
+                    'absolute h-3 rounded',
+                    selectedId === s.id && 'ring-1 ring-foreground',
+                  )}
+                  style={{ left: `${leftPct}%`, width: `${(24 - s.startHour) / 24 * 100}%`, background: s.color }}
+                  title={`${s.name} (${formatSessionHours(s)})`}
+                />
+                <div
+                  className={cn(
+                    'absolute h-3 rounded',
+                    selectedId === s.id && 'ring-1 ring-foreground',
+                  )}
+                  style={{ left: 0, width: `${(s.endHour - 24) / 24 * 100}%`, background: s.color }}
+                />
+                <span className="absolute left-1 top-3 text-[9px] font-medium">{s.shortName}</span>
+              </div>
+            )
+          }
+          return (
+            <div key={s.id} className="absolute h-3" style={{ top, left: `${leftPct}%`, width: `${widthPct}%` }}>
+              <div
+                className={cn(
+                  'h-3 rounded',
+                  selectedId === s.id && 'ring-1 ring-foreground',
+                )}
+                style={{ background: s.color }}
+                title={`${s.name} (${formatSessionHours(s)})`}
+              />
+              <span className="absolute left-1 top-3 text-[9px] font-medium">{s.shortName}</span>
+            </div>
+          )
+        })}
+      </div>
+      {/* Legend */}
+      <div className="flex flex-wrap gap-2 text-[10px]">
+        {sessions.map((s) => (
+          <div key={s.id} className="flex items-center gap-1">
+            <span className="size-2 rounded" style={{ background: s.color }} />
+            <span>{s.shortName}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }

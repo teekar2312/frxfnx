@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS: Partial<AppSettings> = {
   tradingStart: '08:00',
   tradingEnd: '23:30',
   blockWeekend: true,
+  tradingSession: 'all',  // 'all' | 'sydney' | 'tokyo' | 'london' | 'newyork' | 'overlap_sydney_tokyo' | 'overlap_london_ny'
   tiingoApiKey: '',
   groqApiKey: '',
   groqModel: 'llama-3.3-70b-versatile',
