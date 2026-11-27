@@ -64,9 +64,17 @@ Setiap tipe auto-update endpoint. Tersedia 10 suggested models dengan tombol Pul
 git clone https://github.com/teekar2312/frxfnx.git finex-forex
 cd finex-forex
 
-# Setup env
-copy scripts\.env.example .env
+# Setup env (pilih salah satu)
+copy .env.example .env                    # development (localhost)
+copy .env.production.example .env.production  # production
+
 # Edit .env: isi MT5_LOGIN, MT5_PASSWORD, GROQ_API_KEY, TIINGO_API_KEY
+# Di Windows, gunakan Notepad atau VS Code:
+#   notepad .env
+#   code .env
+
+# Atau gunakan script otomatis (isi minimal: MT5 + Groq key)
+#   bash scripts/setup-env.sh
 
 # Install JS dependencies
 bun install

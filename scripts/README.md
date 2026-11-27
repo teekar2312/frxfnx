@@ -16,11 +16,16 @@ Platform trading forex full-stack untuk broker **FINEX Indonesia** dengan integr
 ## 2. Setup Repository (VS Code)
 
 ```powershell
-git clone <repo-url> finex-forex
+git clone https://github.com/teekar2312/frxfnx.git finex-forex
 cd finex-forex
-# Salin env
-copy scripts\.env.example .env
+
+# Salin env (pilih salah satu)
+copy .env.example .env                            # development
+copy .env.production.example .env.production      # production
+
 # Edit .env: isi MT5_LOGIN, MT5_PASSWORD, GROQ_API_KEY, TIINGO_API_KEY
+notepad .env
+# atau dengan VS Code:  code .env
 
 # Install JS dependencies
 bun install
