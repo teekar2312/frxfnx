@@ -1,0 +1,81 @@
+# ============================================================
+# FINEX Forex Trading Platform — Docker Compose
+# ============================================================
+# Run:   docker compose up -d
+# Logs:  docker compose logs -f
+# Stop:  docker compose down
+# ============================================================
+
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: finex-forex
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      - "3004:3004"
+    env_file:
+      - .env.production
+    volumes:
+      - ./logs:/app/logs
+      - ./db:/app/db
+      - ./backups:/app/backups
+    networks:
+      - finex-net
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Optional: PostgreSQL untuk production (ganti SQLite)
+  postgres:
+    image: postgres:16-alpine
+    container_name: finex-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-finex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-finex}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/deploy/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - finex-net
+    profiles: ["postgres"]  # only start with --profile postgres
+
+  # Optional: Nginx reverse proxy dengan SSL
+  nginx:
+    image: nginx:alpine
+    container_name: finex-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./scripts/deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - app
+    networks:
+      - finex-net
+    profiles: ["nginx"]
+
+volumes:
+  postgres-data:
+
+networks:
+  finex-net:
+    driver: bridge

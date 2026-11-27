@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { rateLimit, rateLimitedResponse, applyCors, applySecurityHeaders, sanitizeString } from '@/lib/security'
+import { getConfig } from '@/lib/config/env'
+import { log } from '@/lib/logger'
 
 // POST /api/ai/chat
 // Body: { provider: 'groq' | 'local', prompt: string, context?: any }
@@ -6,11 +9,45 @@ import { NextRequest, NextResponse } from 'next/server'
 // (karena key disimpan di client zustand). Untuk production, set GROQ_API_KEY di .env
 
 export async function POST(req: NextRequest) {
-  const body = await req.json()
+  // Apply CORS + security headers
+  let res: NextResponse
+  const origin = req.headers.get('origin')
+
+  // Rate limit
+  const rl = rateLimit('ai:chat', req)
+  if (rl.exceeded) {
+    res = rateLimitedResponse()
+    return applySecurityHeaders(applyCors(res, origin))
+  }
+
+  // Parse + validate body
+  let body: any
+  try {
+    body = await req.json()
+  } catch (e) {
+    log.warn('ai', 'Invalid JSON body')
+    res = NextResponse.json({ error: 'Invalid JSON body', code: 'INVALID_BODY' }, { status: 400 })
+    return applySecurityHeaders(applyCors(res, origin))
+  }
+
   const { provider, prompt, context } = body || {}
 
-  if (!prompt) return NextResponse.json({ error: 'Prompt required' }, { status: 400 })
+  // Input validation
+  if (!prompt) {
+    res = NextResponse.json({ error: 'Prompt required', code: 'MISSING_PROMPT' }, { status: 400 })
+    return applySecurityHeaders(applyCors(res, origin))
+  }
+  if (provider !== 'groq' && provider !== 'local') {
+    res = NextResponse.json({ error: 'Provider must be groq or local', code: 'INVALID_PROVIDER' }, { status: 400 })
+    return applySecurityHeaders(applyCors(res, origin))
+  }
+  const sanitizedPrompt = sanitizeString(prompt, 5000)
+  if (sanitizedPrompt.length < 1) {
+    res = NextResponse.json({ error: 'Prompt too short', code: 'PROMPT_TOO_SHORT' }, { status: 400 })
+    return applySecurityHeaders(applyCors(res, origin))
+  }
 
+  const config = getConfig()
   const sys = `Anda adalah AI Trading Assistant untuk platform forex FINEX Indonesia + MT5.
 Anda membantu trader retail dengan:
 - Analisis berita ekonomi (3 Angka Emas: Previous / Forecast / Actual)
@@ -37,16 +74,19 @@ Jawab dalam Bahasa Indonesia, ringkas, dengan rekomendasi konkret (pair, arah, l
     let tokens = 0
 
     if (provider === 'groq') {
-      const apiKey = process.env.GROQ_API_KEY || body.apiKey || body.groqApiKey
-      // Handle custom model yang diset sebagai '__custom__<model_id>'
-      let modelId = body.model || 'llama-3.3-70b-versatile'
+      const apiKey = config.groqApiKey || body.apiKey || body.groqApiKey
+      let modelId = body.model || config.groqModel
       if (typeof modelId === 'string' && modelId.startsWith('__custom__')) {
-        modelId = modelId.replace('__custom__', '') || 'llama-3.3-70b-versatile'
+        modelId = modelId.replace('__custom__', '') || config.groqModel
       }
       if (!apiKey) {
-        // fallback: kembalikan response stub yang menjelaskan
+        if (config.nodeEnv === 'production') {
+          log.error('ai', 'Groq API key missing in production')
+          res = NextResponse.json({ error: 'GROQ_API_KEY not configured', code: 'MISSING_API_KEY' }, { status: 500 })
+          return applySecurityHeaders(applyCors(res, origin))
+        }
         content = `(Groq API key belum di-set. Atur di Settings > AI Providers. Mock response untuk demo.)
-Anda bertanya: "${prompt}"
+Anda bertanya: "${sanitizedPrompt}"
 
 Sesuai aturan 3 Angka Emas & strategi 15-Min Breakout:
 1. Pastikan Actual sudah keluar (cek News Calendar).
@@ -56,117 +96,121 @@ Sesuai aturan 3 Angka Emas & strategi 15-Min Breakout:
 5. Lot = (Equity × 0.5%) / (SL pips × pip value). Contoh equity $10.000, SL 30 pips, XAU: lot = 50 / (30 × 10) = 0.17 lot.`
         model = 'mock'
       } else {
-        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), config.groqTimeout)
+        const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
           body: JSON.stringify({
             model: modelId,
             messages: [
               { role: 'system', content: sys },
-              { role: 'user', content: prompt },
+              { role: 'user', content: sanitizedPrompt },
             ],
             temperature: 0.4,
             max_tokens: 800,
           }),
+          signal: controller.signal,
         })
-        if (!res.ok) {
-          const err = await res.text()
-          return NextResponse.json({ error: 'Groq error', detail: err, status: res.status }, { status: 500 })
+        clearTimeout(timeout)
+        if (!r.ok) {
+          const err = await r.text()
+          log.error('ai', `Groq API error: ${r.status}`, { err: err.slice(0, 200) })
+          res = NextResponse.json({ error: 'Groq API error', status: r.status, detail: err.slice(0, 200) }, { status: 502 })
+          return applySecurityHeaders(applyCors(res, origin))
         }
-        const data = await res.json()
+        const data = await r.json()
         content = data.choices?.[0]?.message?.content ?? ''
-        model = data.model ?? body.model
+        model = data.model ?? modelId
         tokens = data.usage?.total_tokens ?? 0
       }
     } else {
-      // Local AI (Ollama / LM Studio / vLLM / llama.cpp)
-      const localType = body.localType || 'ollama'
-      let endpoint = body.endpoint || body.localEndpoint || 'http://127.0.0.1:11434/api/generate'
-      // Support both `model` (preferred, consistent with groq path) and `localModel` (legacy)
-      let localModel = body.model || body.localModel || 'llama3.1:8b'
-      // Handle custom model
+      const localType = body.localType || config.localAiType
+      let endpoint = body.endpoint || config.localAiEndpoint
+      let localModel = body.model || config.localAiModel
       if (typeof localModel === 'string' && localModel.startsWith('__custom__')) {
-        localModel = localModel.replace('__custom__', '') || 'llama3.1:8b'
+        localModel = localModel.replace('__custom__', '') || config.localAiModel
       }
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), config.localAiTimeout)
       try {
-        let res: Response
+        let r: Response
         if (localType === 'ollama' || localType === 'custom' || endpoint.includes('/api/generate')) {
-          // Ollama generate API
-          res = await fetch(endpoint, {
+          r = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               model: localModel,
-              prompt: `${sys}\n\nUser: ${prompt}\nAssistant:`,
+              prompt: `${sys}\n\nUser: ${sanitizedPrompt}\nAssistant:`,
               stream: false,
               options: { temperature: 0.4, num_predict: 600 },
             }),
-            signal: AbortSignal.timeout(30000),
+            signal: controller.signal,
           })
         } else if (localType === 'llamacpp' || endpoint.includes('/completion')) {
-          // llama.cpp server
-          res = await fetch(endpoint, {
+          r = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              prompt: `${sys}\n\nUser: ${prompt}\nAssistant:`,
+              prompt: `${sys}\n\nUser: ${sanitizedPrompt}\nAssistant:`,
               n_predict: 600,
               temperature: 0.4,
             }),
-            signal: AbortSignal.timeout(30000),
+            signal: controller.signal,
           })
         } else {
-          // LM Studio / vLLM (OpenAI-compatible)
-          res = await fetch(endpoint, {
+          r = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               model: localModel,
               messages: [
                 { role: 'system', content: sys },
-                { role: 'user', content: prompt },
+                { role: 'user', content: sanitizedPrompt },
               ],
               temperature: 0.4,
               max_tokens: 600,
             }),
-            signal: AbortSignal.timeout(30000),
+            signal: controller.signal,
           })
         }
-        if (!res.ok) {
-          const err = await res.text()
-          content = `(Local AI gagal: ${err.slice(0, 200)}). Pastikan ${localType} running di Windows 11. Untuk Ollama: 'ollama serve' + 'ollama pull ${localModel}'. Mock response:
-
-Pertanyaan: "${prompt}"
-
-Rekomendasi umum (strategi 15-Min Breakout):
-- Pasca-rilis NFP/CPI, tunggu 15 menit pertama (Fase 1 & 2).
-- Tandai High/Low candle M15 pertama, breakout = entry.
-- SL ketat di sisi lawan, target pips pair-specific.`
-          model = 'mock'
-        } else {
-          const data = await res.json()
-          // Handle 3 response formats
-          content = data.response ?? data.choices?.[0]?.message?.content ?? data.content ?? ''
-          model = localModel
-          tokens = data.eval_count ?? data.usage?.total_tokens ?? 0
+        clearTimeout(timeout)
+        if (!r.ok) {
+          const err = await r.text()
+          log.error('ai', `Local AI error: ${r.status}`, { err: err.slice(0, 200) })
+          res = NextResponse.json({ error: `Local AI error ${r.status}`, detail: err.slice(0, 200) }, { status: 502 })
+          return applySecurityHeaders(applyCors(res, origin))
         }
+        const data = await r.json()
+        content = data.response ?? data.choices?.[0]?.message?.content ?? data.content ?? ''
+        model = localModel
+        tokens = data.eval_count ?? data.usage?.total_tokens ?? 0
       } catch (e: any) {
-        content = `(Local AI unreachable: ${e?.message ?? e}). Jalankan '${localType === 'ollama' ? 'ollama serve' : localType + ' server'}' dan pull model '${localModel}' di Windows 11.`
-        model = 'mock'
+        clearTimeout(timeout)
+        if (e?.name === 'AbortError') {
+          log.error('ai', 'Local AI timeout')
+          res = NextResponse.json({ error: 'Local AI timeout', code: 'TIMEOUT' }, { status: 504 })
+        } else {
+          log.error('ai', 'Local AI error', { err: e?.message })
+          res = NextResponse.json({ error: `Local AI error: ${e?.message ?? e}`, code: 'LOCAL_AI_ERROR' }, { status: 502 })
+        }
+        return applySecurityHeaders(applyCors(res, origin))
       }
     }
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       content,
       model,
       tokens,
       latencyMs: Date.now() - start,
       provider,
     })
+    for (const [k, v] of Object.entries(rl.headers)) response.headers.set(k, v as string)
+    log.audit('ai:chat', { provider, model, tokens, latencyMs: Date.now() - start, promptLen: sanitizedPrompt.length })
+    return applySecurityHeaders(applyCors(response, origin))
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'unknown' }, { status: 500 })
+    log.error('ai', 'Unhandled error in /api/ai/chat', { err: e?.message })
+    res = NextResponse.json({ error: e?.message ?? 'unknown error', code: 'INTERNAL_ERROR' }, { status: 500 })
+    return applySecurityHeaders(applyCors(res, origin))
   }
 }

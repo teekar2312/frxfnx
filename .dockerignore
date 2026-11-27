@@ -1,0 +1,23 @@
+# Docker ignore file
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.local
+.env.production
+*.log
+logs
+db
+backups
+certs
+tests
+examples
+skills
+tool-results
+download
+README.md
+*.md
+Dockerfile
+docker-compose.yml
+.dockerignore

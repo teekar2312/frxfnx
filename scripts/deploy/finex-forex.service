@@ -1,0 +1,32 @@
+[Unit]
+Description=FINEX Forex Trading Platform (Next.js)
+After=network.target finex-bridge.service
+Wants=finex-bridge.service
+
+[Service]
+Type=simple
+User=finex
+WorkingDirectory=/opt/finex-forex
+EnvironmentFile=/opt/finex-forex/.env.production
+ExecStart=/usr/bin/node .next/standalone/server.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=finex-forex
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=200%
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/finex-forex/logs /opt/finex-forex/db
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
